@@ -22,29 +22,15 @@ qmcp is an MCP (Model Context Protocol) server that provides semantic search cap
 make install
 ```
 
-### 2. Configure OpenCode
-
-Add to `~/.config/opencode/config.json`:
-
-```json
-{
-  "mcp": {
-    "qmcp": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "qmcp.server"]
-    }
-  }
-}
-```
-
-### 3. Run the Server
+### 2. Add MCP Server to OpenCode
 
 ```bash
-make run-local
+opencode mcp add qmcp -- uv run python -m qmcp.server
 ```
 
-OpenCode will now have access to semantic search tools.
+### 3. That's It!
+
+OpenCode will automatically discover and use the semantic search tools.
 
 ## Manual Run (Optional)
 
@@ -88,44 +74,18 @@ opencode --mcp-config manual_config.json
 
 ## OpenCode Integration
 
-### Option 1: Quick Setup
+### Add MCP Server
 
-1. Run the server in one terminal:
-   ```bash
-   make run-local
-   ```
-
-2. Add to `~/.config/opencode/config.json`:
-
-```json
-{
-  "mcp": {
-    "qmcp": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "qmcp.server"]
-    }
-  }
-}
+```bash
+opencode mcp add qmcp -- uv run python -m qmcp.server
 ```
 
-### Option 2: Manual MCP Config
+### Manage MCP Servers
 
-For permanent installation, add to your OpenCode config:
-
-```json
-{
-  "mcp": {
-    "qmcp": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "qmcp.server"],
-      "env": {
-        "QDRANT_URL": "http://localhost:6333"
-      }
-    }
-  }
-}
+```bash
+opencode mcp list          # List all MCP servers
+opencode mcp debug qmcp     # Debug connection issues
+opencode mcp logout qmcp    # Remove MCP server
 ```
 
 ## Development
@@ -135,6 +95,12 @@ make test        # Run tests
 make lint        # Lint code
 make format      # Format code
 make mcp-dev     # Run with MCP inspector
+```
+
+With environment variables:
+
+```bash
+QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp -- uv run python -m qmcp.server
 ```
 
 ## License

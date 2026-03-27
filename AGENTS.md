@@ -132,36 +132,20 @@ pytest tests/test_parser.py -v
 
 ## Integration with OpenCode
 
-### Local Installation (Recommended)
+### Installation
 
 ```bash
-# Install as MCP server
-make mcp-install
+# Add MCP server to OpenCode
+opencode mcp add qmcp -- uv run python -m qmcp.server
 
-# Or manually
-uv run mcp install src/qmcp/server.py
-```
+# With environment variables
+QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp -- uv run python -m qmcp.server
 
-After installation, OpenCode will automatically discover and use the MCP server.
+# List MCP servers
+opencode mcp list
 
-### Manual Run
-
-If you prefer to run the server manually:
-
-```bash
-# Terminal 1: Start server
-make run-local
-
-# OpenCode config: use stdio transport
-{
-  "mcp": {
-    "qmcp": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "qmcp.server"]
-    }
-  }
-}
+# Debug
+opencode mcp debug qmcp
 ```
 
 ### Available Tools
