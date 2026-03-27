@@ -70,7 +70,6 @@ qmcp/
 │   ├── test_watcher.py
 │   └── test_cleanup.py
 ├── chart/                # Helm chart (optional, for production)
-├── Dockerfile
 ├── Makefile
 └── pyproject.toml
 ```

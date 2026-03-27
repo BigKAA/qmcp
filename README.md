@@ -37,10 +37,7 @@ make install
 ### 1. Ensure Qdrant is running
 
 ```bash
-# With Docker
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-
-# Or use existing Qdrant instance
+# Use existing Qdrant instance
 export QDRANT_URL=http://localhost:6333
 ```
 
