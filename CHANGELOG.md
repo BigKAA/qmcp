@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - N/A
 
+## [0.1.3] - 2026-03-27
+
+### Added
+- N/A
+
+### Changed
+- N/A
+
+### Fixed
+- Use correct CollectionInfo attributes (indexed_vectors_count instead of vectors_count)
+
+### Security
+- N/A
+
 ## [0.1.2] - 2026-03-27
 
 ### Added
