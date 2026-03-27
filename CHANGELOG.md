@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - N/A
 
-## [0.1.3] - 2026-03-27
+## [0.1.4] - 2026-03-27
 
 ### Added
 - N/A
@@ -29,11 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Use correct CollectionInfo attributes (indexed_vectors_count instead of vectors_count)
+- Update server version to 0.1.4
 
 ### Security
 - N/A
 
-## [0.1.2] - 2026-03-27
+## [0.1.3] - 2026-03-27
 
 ### Added
 - N/A
