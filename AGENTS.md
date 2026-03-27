@@ -11,49 +11,33 @@ This file contains instructions for AI agents working on or with this project.
 
 ## Key Commands
 
-### Development
+### Quick Start
 
 ```bash
 # Install dependencies
 make install
 
-# Run in development mode (with MCP inspector)
-make mcp-dev
+# Install as MCP server for OpenCode
+make mcp-install
 
 # Run tests
 make test
 
+# Lint code
+make lint
+```
+
+### Development
+
+```bash
+# Run in development mode (with MCP inspector)
+make mcp-dev
+
 # Run with coverage
 make test-cov
 
-# Lint code
-make lint
-
 # Format code
 make format
-```
-
-### Docker
-
-```bash
-# Build image
-make build
-
-# Run locally
-docker run -e QDRANT_URL=http://192.168.218.190:6333 -p 8000:8000 qmcp:latest
-```
-
-### Kubernetes
-
-```bash
-# Deploy with Helm
-helm upgrade --install qmcp ./chart
-
-# Delete deployment
-helm uninstall qmcp
-
-# Dry run (check values)
-helm install --dry-run --debug qmcp ./chart
 ```
 
 ## Architecture
@@ -68,9 +52,11 @@ qmcp/
 │   ├── qmcp/
 │   │   ├── server.py      # FastMCP server, tools definition
 │   │   ├── client.py     # Qdrant client wrapper
+│   │   ├── config.py     # Pydantic settings
 │   │   ├── indexer.py    # Code indexing logic
 │   │   ├── watcher.py    # File system watcher
 │   │   ├── cleanup.py    # Stale vector cleanup
+│   │   ├── logging_config.py  # Logging configuration
 │   │   ├── parser/       # Multi-language parsers
 │   │   │   ├── base.py   # Parser interface
 │   │   │   ├── python.py # AST parser
@@ -80,8 +66,10 @@ qmcp/
 ├── tests/
 │   ├── test_server.py
 │   ├── test_indexer.py
-│   └── test_parser.py
-├── chart/                # Helm chart
+│   ├── test_parser.py
+│   ├── test_watcher.py
+│   └── test_cleanup.py
+├── chart/                # Helm chart (optional, for production)
 ├── Dockerfile
 ├── Makefile
 └── pyproject.toml
@@ -115,10 +103,9 @@ qmcp/
 
 ### Adding Configuration
 
-1. Add to `chart/values.yaml`
-2. Add environment variable handling in `chart/templates/deployment.yaml`
-3. Add to `.env.example`
-4. Document in README.md
+1. Add environment variable to `.env.example`
+2. Add to `Settings` class in `src/qmcp/config.py`
+3. Update README.md with documentation
 
 ## Testing
 
@@ -140,68 +127,38 @@ pytest tests/test_parser.py -v
 - `tests/test_server.py` - MCP tools tests
 - `tests/test_indexer.py` - Indexer tests
 - `tests/test_parser.py` - Parser tests
-
-## Docker Build
-
-### Build and Push
-
-```bash
-# Build
-docker build -t qmcp:latest .
-
-# Tag for registry
-docker tag qmcp:latest registry.example.com/qmcp:latest
-
-# Push
-docker push registry.example.com/qmcp:latest
-```
-
-### Local Testing
-
-```bash
-# Run with local Qdrant
-docker run -e QDRANT_URL=http://host.docker.internal:6333 -p 8000:8000 qmcp:latest
-
-# Mount local directory
-docker run -v /path/to/repo:/data/repo -e QDRANT_URL=http://192.168.218.190:6333 -p 8000:8000 qmcp:latest
-```
-
-## Helm Chart
-
-### Values Configuration
-
-Key values in `chart/values.yaml`:
-
-| Key | Description | Default |
-|-----|-------------|---------|
-| `replicaCount` | Number of pods | 1 |
-| `image.tag` | Image version | latest |
-| `env.QDRANT_URL` | Qdrant server URL | http://192.168.218.190:6333 |
-| `env.EMBEDDING_MODEL` | Embedding model | BAAI/bge-small-en-v1.5 |
-| `volume.storageClassName` | Storage class | nfs-client |
-| `resources.limits.memory` | Memory limit | 2Gi |
-
-### Deploy Steps
-
-1. Build Docker image
-2. Push to registry (if using remote)
-3. Update `values.yaml` if needed
-4. Deploy: `helm upgrade --install qmcp ./chart`
-5. Check status: `kubectl get pods -l app.kubernetes.io/name=qmcp`
+- `tests/test_watcher.py` - Watcher tests
+- `tests/test_cleanup.py` - Cleanup tests
 
 ## Integration with OpenCode
 
-### Configuration
+### Local Installation (Recommended)
 
-Add to OpenCode config:
+```bash
+# Install as MCP server
+make mcp-install
 
-```json
+# Or manually
+uv run mcp install src/qmcp/server.py
+```
+
+After installation, OpenCode will automatically discover and use the MCP server.
+
+### Manual Run
+
+If you prefer to run the server manually:
+
+```bash
+# Terminal 1: Start server
+make run-local
+
+# OpenCode config: use stdio transport
 {
   "mcp": {
     "qmcp": {
-      "type": "remote",
-      "url": "http://qmcp.default.svc.cluster.local:8000/mcp",
-      "enabled": true
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "qmcp.server"]
     }
   }
 }
@@ -224,27 +181,17 @@ Once configured, OpenCode will have access to:
 
 ## Troubleshooting
 
-### Container Won't Start
-
-```bash
-# Check logs
-kubectl logs -l app.kubernetes.io/name=qmcp
-
-# Check events
-kubectl describe pod -l app.kubernetes.io/name=qmcp
-```
-
 ### Qdrant Connection Failed
 
 1. Verify Qdrant is running: `curl http://192.168.218.190:6333`
-2. Check network policies
-3. Verify QDRANT_URL in configmap
+2. Check network connectivity
+3. Verify QDRANT_URL environment variable
 
 ### Indexing Not Working
 
-1. Check PVC is mounted: `kubectl exec <pod> -- ls /data/repo`
-2. Check file permissions
-3. Verify embedding model is available
+1. Check file permissions
+2. Verify embedding model is available
+3. Check logs for parsing errors
 
 ## Code Style
 
@@ -294,52 +241,6 @@ async def safe_tool() -> dict:
         return {"status": "success", "data": result}
     except SpecificError as e:
         return {"status": "error", "message": str(e)}
-```
-
-## Infrastructure
-
-### Kubernetes Cluster
-
-The Kubernetes cluster is accessible via `kubectl`. Before deploying, verify cluster connectivity:
-
-```bash
-# Check cluster connectivity
-kubectl cluster-info
-
-# Verify kubectl is configured correctly
-kubectl get nodes
-```
-
-### Docker
-
-Docker is available locally for building and testing images:
-
-```bash
-# Verify Docker is running
-docker version
-docker ps
-```
-
-### Docker Registry
-
-Use the private registry for storing and pulling images during development and testing:
-
-- **Registry URL**: `https://harbor.kryukov.lan/library`
-- **Image naming convention**: `harbor.kryukov.lan/library/qmcp:<tag>`
-
-```bash
-# Login to registry
-docker login harbor.kryukov.lan
-
-# Build and tag for private registry
-docker build -t qmcp:latest .
-docker tag qmcp:latest harbor.kryukov.lan/library/qmcp:latest
-
-# Push to registry
-docker push harbor.kryukov.lan/library/qmcp:latest
-
-# Pull from registry
-docker pull harbor.kryukov.lan/library/qmcp:latest
 ```
 
 ## Communication
