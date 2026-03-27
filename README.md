@@ -43,6 +43,8 @@ make install
 export QDRANT_URL=http://localhost:6333
 ```
 
+For Kubernetes deployment, see [Qdrant on Kubernetes](https://github.com/BigKAA/youtube/tree/master/Utils/Qdrant).
+
 ### 2. Add MCP Server to OpenCode
 
 ```bash
