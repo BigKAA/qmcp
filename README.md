@@ -9,6 +9,8 @@ Semantic search server for code and documentation using Qdrant vector database.
 - **Live Updates**: File watcher for automatic reindexing
 - **Incremental Indexing**: Only index changed files
 - **Cleanup**: Remove stale vectors for deleted/changed files
+- **Diagnostics**: Introspection tools to understand what's indexed
+- **OpenCode Skill**: Natural language interface for Qdrant management
 
 ## Installation
 
@@ -72,18 +74,93 @@ OpenCode will automatically discover and use the semantic search tools.
 
 ## MCP Tools
 
+### Search & Indexing
+
 | Tool | Description |
 |------|-------------|
 | `qdrant_search` | Semantic search in code/docs |
 | `qdrant_index_directory` | Index a directory |
 | `qdrant_reindex` | Reindex (full or incremental) |
-| `qdrant_list_collections` | List collections |
+
+### Collection Management
+
+| Tool | Description |
+|------|-------------|
+| `qdrant_list_collections` | List all collections |
 | `qdrant_get_collection_info` | Get collection info |
 | `qdrant_delete_collection` | Delete collection |
+
+### Diagnostics & Introspection (NEW)
+
+| Tool | Description |
+|------|-------------|
+| `qdrant_diagnose_collection` | Full collection diagnostics - vectors, files, types, issues |
+| `qdrant_list_indexed_files` | Paginated list of indexed files with metadata |
+| `qdrant_diff_collection` | Compare Qdrant state with filesystem (orphans, missing, modified) |
+
+### Maintenance
+
+| Tool | Description |
+|------|-------------|
+| `qdrant_cleanup` | Clean stale vectors (dry-run supported) |
 | `qdrant_watch_start` | Start file watcher |
 | `qdrant_watch_stop` | Stop file watcher |
-| `qdrant_cleanup` | Clean stale vectors |
 | `qdrant_get_status` | Server status |
+
+### Diagnostic Tools Usage Examples
+
+```bash
+# Diagnose a collection - see what's indexed, file types, issues
+qdrant_diagnose_collection(collection="myproject")
+
+# List indexed files with pagination
+qdrant_list_indexed_files(collection="myproject", limit=50, offset=0)
+
+# Filter by file type
+qdrant_list_indexed_files(collection="myproject", file_type=".py")
+
+# Compare Qdrant state with filesystem
+qdrant_diff_collection(collection="myproject", repo_path="/path/to/repo")
+```
+
+## OpenCode Skill
+
+The project includes an OpenCode skill for natural language management of Qdrant.
+
+### Installation
+
+```bash
+# Copy skill to OpenCode skills directory
+cp -r skills/qmcp-manager ~/.config/opencode/skills/
+```
+
+### Usage
+
+Once installed, OpenCode will automatically activate the skill when you ask questions like:
+
+| Query | What Happens |
+|-------|--------------|
+| `what's indexed in my Qdrant?` | Diagnoses collection and shows stats |
+| `show collection stats` | Lists all collections with vector counts |
+| `clean up orphans in my index` | Finds and previews deletion of orphaned vectors |
+| `diagnose my index` | Full diagnostics with issues and file list |
+| `compare index with /path/to/repo` | Shows orphans, missing, and modified files |
+| `find missing files` | Lists files on disk but not indexed |
+| `is my index up to date?` | Compares hashes to detect changes |
+
+### Workflows Provided by Skill
+
+1. **Quick Status** - Check collection state with `qdrant_list_collections`
+2. **Full Diagnostics** - Detailed analysis with `qdrant_diagnose_collection`
+3. **Diff** - Compare Qdrant with filesystem using `qdrant_diff_collection`
+4. **Safe Cleanup** - Preview with dry-run, then confirm deletion
+5. **Smart Reindex** - Incremental updates based on file hashes
+
+### Skill Location
+
+```
+skills/qmcp-manager/SKILL.md
+```
 
 ## OpenCode Integration
 

@@ -113,6 +113,39 @@ Handles removal of stale vectors:
 - Removes vectors for deleted files
 - Updates vectors for changed files
 
+### 7. Diagnostics Manager (`diagnostics.py`)
+
+Provides introspection and analysis of collections:
+- **Collection Diagnostics**: Full analysis - vectors, files, file types, chunk distribution, issues
+- **Indexed Files Listing**: Paginated file list with metadata
+- **Collection Diff**: Compare Qdrant state with filesystem (orphans, missing, modified)
+
+```
+DiagnosticsManager
+├── diagnose_collection()     → Complete collection analysis
+├── list_indexed_files()      → Paginated file listing
+└── diff_collection()         → Qdrant ↔ filesystem comparison
+```
+
+## OpenCode Skill
+
+The `qmcp-manager` skill provides natural language interface for Qdrant management:
+
+**Location**: `.opencode-skills/qmcp-manager/`
+
+**Trigger phrases**:
+- "what's indexed", "show collection stats"
+- "clean up orphans", "cleanup"
+- "diagnose", "diff", "compare"
+- "reindex", "index new files"
+
+**Workflows**:
+1. Quick Status - Check collection state
+2. Full Diagnostics - Detailed analysis with issues
+3. Diff - Compare Qdrant with filesystem
+4. Safe Cleanup - Preview before deletion
+5. Smart Reindex - Incremental updates
+
 ## Data Flow
 
 ### Search Flow

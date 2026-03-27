@@ -29,7 +29,7 @@ def main():
     transport = os.getenv("TRANSPORT", "stdio")
 
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-    print(f"Starting QDrant MCP Server")
+    print("Starting QDrant MCP Server")
     print(f"Transport: {transport}")
     print(f"Qdrant URL: {qdrant_url}")
 

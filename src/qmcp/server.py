@@ -22,6 +22,7 @@ from pydantic import Field
 from .cleanup import CleanupManager
 from .client import QdrantClientWrapper, QdrantConnectionError
 from .config import get_settings
+from .diagnostics import DiagnosticsManager
 from .indexer import Indexer
 from .logging_config import get_logger, init_logging
 from .watcher import AsyncWatcher
@@ -71,6 +72,12 @@ def get_cleanup_manager() -> CleanupManager:
         client = get_qdrant_client()
         _cleanup_manager = CleanupManager(client)
     return _cleanup_manager
+
+
+def get_diagnostics_manager() -> DiagnosticsManager:
+    """Get or create diagnostics manager."""
+    client = get_qdrant_client()
+    return DiagnosticsManager(client)
 
 
 # ============================================================================
@@ -305,6 +312,76 @@ async def qdrant_get_status() -> dict[str, Any]:
             "status": "error",
             "error": str(e),
         }
+
+
+@mcp.tool()
+async def qdrant_diagnose_collection(
+    collection: str = Field(..., description="Collection name to diagnose"),
+) -> dict[str, Any]:
+    """Perform full diagnostics of a collection.
+
+    Analyzes the collection and returns:
+    - Total vectors and files count
+    - File type distribution
+    - Chunk type distribution
+    - Indexing timestamp range (oldest/newest)
+    - Issues found (missing hashes, empty chunks, etc.)
+    - List of all indexed files with details
+    """
+    try:
+        diagnostics = get_diagnostics_manager()
+        return diagnostics.diagnose_collection(collection)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def qdrant_list_indexed_files(
+    collection: str = Field(..., description="Collection name"),
+    limit: int = Field(default=100, ge=1, le=1000, description="Max files to return"),
+    offset: int = Field(default=0, ge=0, description="Pagination offset"),
+    file_type: str | None = Field(
+        default=None, description="Filter by file extension (e.g., '.py', '.go')"
+    ),
+) -> dict[str, Any]:
+    """List all indexed files in a collection with pagination.
+
+    Returns file metadata including:
+    - File path
+    - Number of chunks
+    - Content hash
+    - Indexed timestamp
+    - Chunk types found in file
+    """
+    try:
+        diagnostics = get_diagnostics_manager()
+        return diagnostics.list_indexed_files(
+            collection=collection,
+            limit=limit,
+            offset=offset,
+            file_type_filter=file_type,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def qdrant_diff_collection(
+    collection: str = Field(..., description="Collection name to compare"),
+    repo_path: str = Field(..., description="Repository path to compare against"),
+) -> dict[str, Any]:
+    """Compare Qdrant collection state with filesystem.
+
+    Detects three types of discrepancies:
+    - orphans: Vectors in Qdrant but file doesn't exist on disk
+    - missing: Files on disk but not indexed in Qdrant
+    - modified: Files that exist but content has changed (hash mismatch)
+    """
+    try:
+        diagnostics = get_diagnostics_manager()
+        return diagnostics.diff_collection(collection=collection, repo_path=repo_path)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ============================================================================
