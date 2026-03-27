@@ -1,6 +1,6 @@
 [project]
 name = "qmcp-qdrant"
-version = "0.1.1"
+version = "0.1.2"
 description = "Qdrant MCP Server for OpenCode - semantic search for code and documentation"
 authors = [{name = "Artur", email = "artur@example.com"}]
 license = {text = "Apache-2.0"}
@@ -28,6 +28,9 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
 ]
+
+[project.scripts]
+qmcp-qdrant = "qmcp.__main__:main"
 
 [project.optional-dependencies]
 dev = [
@@ -67,3 +70,6 @@ ignore = ["E501"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qmcp"]
