@@ -1,0 +1,73 @@
+replicaCount: 1
+
+image:
+  repository: qmcp
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8000
+  annotations: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+env:
+  QDRANT_URL: "http://192.168.218.190:6333"
+  EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5"
+  WATCH_PATHS: "/data/repo"
+  BATCH_SIZE: "50"
+  DEBOUNCE_SECONDS: "5"
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  TRANSPORT: "streamable-http"
+
+volume:
+  enabled: true
+  mountPath: /data/repo
+  storageClassName: nfs-client
+  size: 10Gi
+
+resources:
+  limits:
+    memory: "2Gi"
+    cpu: "1000m"
+  requests:
+    memory: "1Gi"
+    cpu: "500m"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: qmcp.internal
+      paths:
+        - path: /mcp
+          pathType: Prefix
+  tls: []
+
+gateway:
+  enabled: true
+  host: qmcp.internal
+  path: /mcp

@@ -1,0 +1,15 @@
+{{- if .Values.volume.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "qmcp.fullname" . }}-pvc
+  labels:
+    {{- include "qmcp.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: {{ .Values.volume.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.volume.size | quote }}
+{{- end }}

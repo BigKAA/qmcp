@@ -1,0 +1,15 @@
+apiVersion: v2
+name: qmcp
+description: QDrant MCP Server for OpenCode - semantic search for code and documentation
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - opencode
+  - qdrant
+  - vector-search
+  - mcp
+  - semantic-search
+maintainers:
+  - name: Artur
+    email: artur@example.com
