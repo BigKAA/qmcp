@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "qmcp": {
+      "type": "local",
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "qmcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333",
+        "TRANSPORT": "stdio"
+      }
+    }
+  }
+}

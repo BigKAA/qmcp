@@ -12,34 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main entry point for qmcp server."""
+"""Entry point for running qmcp as a module: python -m qmcp"""
 
-import os
 import sys
-
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from qmcp.server import mcp
 
 
 def main():
     """Run the MCP server."""
-    # Get configuration
-    transport = os.getenv("TRANSPORT", "stdio")
+    # Import here to avoid issues with relative imports
+    import os
+
+    os.environ.setdefault("TRANSPORT", "stdio")
+
+    from qmcp.server import mcp
 
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    transport = os.getenv("TRANSPORT", "stdio")
+
     print(f"Starting QDrant MCP Server")
     print(f"Transport: {transport}")
     print(f"Qdrant URL: {qdrant_url}")
+    sys.stdout.flush()
 
-    # Run server
-    if transport == "streamable-http":
-        host = os.getenv("HOST", "0.0.0.0")
-        port = int(os.getenv("PORT", "8000"))
-        mcp.run(transport=transport, host=host, port=port)
-    else:
-        mcp.run(transport=transport)
+    # Run server - FastMCP.run() handles stdio blocking
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
