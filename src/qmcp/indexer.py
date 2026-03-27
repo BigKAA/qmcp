@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import pathspec
+
 from .client import QdrantClientWrapper
 from .logging_config import get_logger
 from .parser import find_parser
@@ -112,14 +114,55 @@ class Indexer:
         }
 
     def _find_files(self, path: Path, patterns: list[str]) -> list[Path]:
-        """Find all files matching patterns."""
-        files = []
+        """Find all files matching patterns, respecting .gitignore.
 
-        # Convert glob patterns to suffixes
+        Loads .gitignore files from the root directory and all subdirectories,
+        following git's behavior where parent .gitignore affects all children.
+        """
+        # Load all .gitignore files, starting from root and going deeper
+        gitignore_lines = []
+
+        # Collect .gitignore files from path up to root
+        current = path
+        while current != current.parent:
+            gitignore_path = current / ".gitignore"
+            if gitignore_path.exists():
+                try:
+                    with open(gitignore_path) as f:
+                        lines = f.readlines()
+                    # Add lines with directory prefix for nested gitignores
+                    rel_path = gitignore_path.parent.relative_to(path).as_posix()
+                    if rel_path != ".":
+                        # Prepend directory path to patterns in nested gitignores
+                        for line in lines:
+                            line = line.rstrip("\r\n")
+                            if line and not line.startswith("#"):
+                                gitignore_lines.append(f"{rel_path}/{line}")
+                    else:
+                        gitignore_lines.extend(line.rstrip("\r\n") for line in lines)
+                except OSError as e:
+                    self.logger.warning(f"Failed to read {gitignore_path}: {e}")
+            current = current.parent
+
+        # Build pathspec from collected patterns
+        if gitignore_lines:
+            spec = pathspec.PathSpec.from_lines("gitignore", gitignore_lines)
+            self.logger.debug(f"Loaded {len(gitignore_lines)} gitignore patterns")
+        else:
+            spec = None
+
+        # Find all matching files
+        files = []
         for pattern in patterns:
             if pattern.startswith("*."):
                 suffix = pattern[1:]
-                files.extend(path.rglob(f"*{suffix}"))
+                for f in path.rglob(f"*{suffix}"):
+                    rel_path = f.relative_to(path).as_posix()
+                    # Filter out gitignored files
+                    if spec and spec.match_file(rel_path):
+                        self.logger.debug(f"Skipping gitignored file: {rel_path}")
+                        continue
+                    files.append(f)
 
         # Remove duplicates and filter to only existing files
         return list(set(f for f in files if f.is_file()))

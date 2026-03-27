@@ -95,6 +95,23 @@ When user wants to update the index:
 4. Recommend incremental as default (faster, safer)
 ```
 
+## Gitignore Support
+
+The indexer **automatically respects `.gitignore` files**. This means:
+
+- Files and directories listed in `.gitignore` (e.g., `node_modules/`, `build/`, `*.pyc`, `.venv/`) are **NOT indexed**
+- Supports nested `.gitignore` files (parent directory rules apply to children)
+- Works with standard gitignore patterns: wildcards (`*.log`), directories (`dist/`), negation (`!important.log`)
+
+This significantly reduces index size by excluding:
+- Dependencies (`node_modules/`, `vendor/`, `.venv/`)
+- Build artifacts (`dist/`, `build/`, `*.class`)
+- Generated files (`*.pyc`, `__pycache__/`)
+- Environment files (`.env`, `.env.local`)
+- IDE settings (`.idea/`, `.vscode/`)
+
+**Note**: Files not covered by `.gitignore` but that shouldn't be indexed can be added to the project's `.gitignore` to exclude them from future indexing.
+
 ## Collection Naming
 
 Default collections:

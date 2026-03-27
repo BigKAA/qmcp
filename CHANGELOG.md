@@ -19,6 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - N/A
 
+## [0.1.5] - 2026-03-27
+
+### Added
+- Gitignore support: indexer now respects `.gitignore` files
+- Automatically excludes `node_modules/`, `__pycache__/`, `.venv/`, build artifacts, etc.
+- Added `pathspec` dependency for gitignore pattern matching
+- Added tests for gitignore functionality
+
+### Changed
+- Updated README with gitignore documentation and indexing notes
+- Updated skill documentation with gitignore support info
+
+### Fixed
+- N/A
+
+### Security
+- N/A
+
 ## [0.1.4] - 2026-03-27
 
 ### Added

@@ -8,6 +8,7 @@ Semantic search server for code and documentation using Qdrant vector database.
 - **Multi-language Support**: Python, Go, JavaScript, TypeScript, Java, C#, Markdown
 - **Live Updates**: File watcher for automatic reindexing
 - **Incremental Indexing**: Only index changed files
+- **Gitignore Support**: Respects `.gitignore` - excludes `node_modules`, `__pycache__`, `.venv`, build artifacts, etc.
 - **Cleanup**: Remove stale vectors for deleted/changed files
 - **Diagnostics**: Introspection tools to understand what's indexed
 - **OpenCode Skill**: Natural language interface for Qdrant management
@@ -60,6 +61,21 @@ QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp-qdrant -- qmcp-qdra
 ### 3. That's It!
 
 OpenCode will automatically discover and use the semantic search tools.
+
+## Indexing Notes
+
+> ⚠️ **Important**: Full indexing and reindexing of large projects can take a significant amount of time (minutes to hours depending on project size).
+
+For large codebases, prefer:
+- **Incremental reindex** (`mode="incremental"`) - only updates changed files based on content hashes
+- **File watcher** - enables automatic live updates when files change
+
+The indexer automatically respects `.gitignore` files, significantly reducing index size by excluding:
+- Dependencies: `node_modules/`, `vendor/`, `.venv/`, `.pip cache/`
+- Build artifacts: `dist/`, `build/`, `*.class`, `*.o`, `*.so`
+- Generated files: `__pycache__/`, `*.pyc`, `*.pyo`, `.pytest_cache/`
+- IDE settings: `.idea/`, `.vscode/`, `*.swp`, `*.swo`
+- Environment files: `.env`, `.env.local`, `*.log`
 
 ## Configuration
 
