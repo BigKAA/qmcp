@@ -67,7 +67,9 @@ def get_cleanup_manager() -> CleanupManager:
 @mcp.tool()
 async def qdrant_search(
     query: str = Field(..., description="Search query text"),
-    collection: str = Field(default="code", description="Collection to search in (code or docs)"),
+    collection: str = Field(
+        ..., description="Collection name to search in (use project-specific name to isolate data)"
+    ),
     limit: int = Field(default=5, ge=1, le=100, description="Maximum number of results"),
     score_threshold: float = Field(
         default=0.7, ge=0.0, le=1.0, description="Minimum score threshold"
@@ -94,7 +96,10 @@ async def qdrant_search(
 @mcp.tool()
 async def qdrant_index_directory(
     path: str = Field(..., description="Directory path to index"),
-    collection: str = Field(default="code", description="Collection to index into"),
+    collection: str = Field(
+        ...,
+        description="Collection name to index into (use unique name per project for data isolation)",
+    ),
     patterns: list[str] = Field(
         default=["*.py", "*.go", "*.js", "*.ts", "*.java", "*.cs", "*.md"],
         description="File patterns to include",
@@ -120,7 +125,7 @@ async def qdrant_index_directory(
 @mcp.tool()
 async def qdrant_reindex(
     path: str = Field(..., description="Directory path to reindex"),
-    collection: str = Field(default="code", description="Collection to reindex"),
+    collection: str = Field(..., description="Collection name to reindex"),
     mode: str = Field(default="incremental", description="Reindex mode: 'full' or 'incremental'"),
 ) -> dict[str, Any]:
     """Reindex a directory - either full rebuild or incremental update.
@@ -236,12 +241,14 @@ async def qdrant_watch_stop() -> dict[str, str]:
 
 @mcp.tool()
 async def qdrant_cleanup(
-    collection: str = Field(..., description="Collection to clean"),
+    collection: str = Field(..., description="Collection name to clean"),
+    repo_path: str = Field(
+        ..., description="Repository path to compare against (directory that was indexed)"
+    ),
     dry_run: bool = Field(default=True, description="If True, only report what would be deleted"),
 ) -> dict[str, Any]:
     """Clean up stale vectors - remove vectors for deleted or changed files."""
     try:
-        repo_path = settings.watch_paths[0] if settings.watch_paths else "/data/repo"
         cleanup = get_cleanup_manager()
         result = cleanup.cleanup(
             collection=collection,
