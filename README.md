@@ -17,13 +17,13 @@ Semantic search server for code and documentation using Qdrant vector database.
 ### Via PyPI (Recommended)
 
 ```bash
-pip install qmcp
+pip install qmcp-qdrant
 ```
 
 ### Via uv
 
 ```bash
-uv tool install qmcp
+uv tool install qmcp-qdrant
 ```
 
 ### From Source
@@ -48,13 +48,13 @@ For Kubernetes deployment, see [Qdrant on Kubernetes](https://github.com/BigKAA/
 ### 2. Add MCP Server to OpenCode
 
 ```bash
-opencode mcp add qmcp -- qmcp
+opencode mcp add qmcp-qdrant -- qmcp-qdrant
 ```
 
 With custom Qdrant URL:
 
 ```bash
-QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp -- qmcp
+QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp-qdrant -- qmcp-qdrant
 ```
 
 ### 3. That's It!
@@ -169,15 +169,15 @@ skills/qmcp-manager/SKILL.md
 ### Add MCP Server
 
 ```bash
-opencode mcp add qmcp -- qmcp
+opencode mcp add qmcp-qdrant -- qmcp-qdrant
 ```
 
 ### Manage MCP Servers
 
 ```bash
 opencode mcp list          # List all MCP servers
-opencode mcp debug qmcp     # Debug connection issues
-opencode mcp logout qmcp    # Remove MCP server
+opencode mcp debug qmcp-qdrant     # Debug connection issues
+opencode mcp logout qmcp-qdrant    # Remove MCP server
 ```
 
 ## Development
