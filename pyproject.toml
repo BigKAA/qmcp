@@ -6,6 +6,17 @@ authors = [{name = "Artur", email = "artur@example.com"}]
 license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["mcp", "qdrant", "semantic-search", "opencode", "vector-database"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "mcp[cli]>=1.0.0",
     "qdrant-client[fastembed]>=1.14.0",
@@ -26,6 +37,11 @@ dev = [
     "ruff>=0.3.0",
     "mypy>=1.8.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/BigKAA/qmcp"
+Repository = "https://github.com/BigKAA/qmcp"
+Documentation = "https://github.com/BigKAA/qmcp#readme"
 
 [build-system]
 requires = ["hatchling"]

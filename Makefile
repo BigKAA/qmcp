@@ -1,17 +1,20 @@
-.PHONY: help install dev test build run clean lint format
+.PHONY: help install dev test build-package run clean lint format mcp-dev mcp-install publish publish-test release
 
 help:
 	@echo "QMCP - QDrant MCP Server for OpenCode"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  install  - Install dependencies"
-	@echo "  dev      - Install in development mode"
-	@echo "  test     - Run tests"
-	@echo "  build    - Build Docker image"
-	@echo "  run      - Run locally"
-	@echo "  clean    - Clean up"
-	@echo "  lint     - Run linter"
-	@echo "  format   - Format code"
+	@echo "  install       - Install dependencies"
+	@echo "  dev           - Install in development mode"
+	@echo "  test          - Run tests"
+	@echo "  build-package - Build PyPI package (dist/)"
+	@echo "  publish-test  - Publish to Test PyPI"
+	@echo "  publish       - Publish to PyPI"
+	@echo "  clean         - Clean up"
+	@echo "  lint          - Run linter"
+	@echo "  format        - Format code"
+	@echo "  mcp-dev       - Run with MCP inspector"
+	@echo "  mcp-install   - Install as MCP server"
 
 install:
 	uv sync
@@ -26,17 +29,8 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=src --cov-report=html --cov-report=term
 
-build:
-	docker build -t qmcp:latest .
-
-run:
-	export QDRANT_URL=http://192.168.218.190:6333
-	uv run python -m qmcp.server
-
-run-local:
-	uv run python -m qmcp.server
-
 clean:
+	rm -rf dist/
 	rm -rf .pytest_cache
 	rm -rf .ruff_cache
 	rm -rf htmlcov
@@ -55,3 +49,30 @@ mcp-dev:
 
 mcp-install:
 	uv run mcp install src/qmcp/server.py
+
+# PyPI Publishing
+build-package:
+	rm -rf dist/
+	uv build
+
+publish-test:
+	@echo "Publishing to Test PyPI..."
+	uv publish --repository testpypi --trusted-publishing never
+
+publish:
+	@echo "Publishing to PyPI..."
+	uv publish --trusted-publishing never
+
+release:
+	@echo "Usage: make release VERSION=X.Y.Z"
+	@echo "This will:"
+	@echo "  1. Update version in pyproject.toml"
+	@echo "  2. Create git tag vX.Y.Z"
+	@echo "  3. Build package"
+	@echo "  4. Publish to PyPI"
+	@echo ""
+	@echo "To release, run manually:"
+	@echo "  1. uv build"
+	@echo "  2. uv publish --trusted-publishing never"
+	@echo "  3. git tag -a vX.Y.Z -m 'Release vX.Y.Z'"
+	@echo "  4. git push origin vX.Y.Z"

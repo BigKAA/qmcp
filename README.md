@@ -2,10 +2,6 @@
 
 Semantic search server for code and documentation using Qdrant vector database.
 
-## Overview
-
-qmcp is an MCP (Model Context Protocol) server that provides semantic search capabilities for code and documentation. It integrates with OpenCode CLI to enable intelligent code search using vector embeddings.
-
 ## Features
 
 - **Semantic Search**: Find code and documentation using natural language queries
@@ -14,35 +10,55 @@ qmcp is an MCP (Model Context Protocol) server that provides semantic search cap
 - **Incremental Indexing**: Only index changed files
 - **Cleanup**: Remove stale vectors for deleted/changed files
 
-## Quick Start
+## Installation
 
-### 1. Install Dependencies
+### Via PyPI (Recommended)
 
 ```bash
+pip install qmcp
+```
+
+### Via uv
+
+```bash
+uv tool install qmcp
+```
+
+### From Source
+
+```bash
+git clone https://github.com/BigKAA/qmcp.git
+cd qmcp
 make install
+```
+
+## Quick Start
+
+### 1. Ensure Qdrant is running
+
+```bash
+# With Docker
+docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+
+# Or use existing Qdrant instance
+export QDRANT_URL=http://localhost:6333
 ```
 
 ### 2. Add MCP Server to OpenCode
 
 ```bash
-opencode mcp add qmcp -- uv run python -m qmcp.server
+opencode mcp add qmcp -- qmcp
+```
+
+With custom Qdrant URL:
+
+```bash
+QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp -- qmcp
 ```
 
 ### 3. That's It!
 
 OpenCode will automatically discover and use the semantic search tools.
-
-## Manual Run (Optional)
-
-If you prefer to run the server manually:
-
-```bash
-# Terminal 1: Start server
-make run-local
-
-# Terminal 2: OpenCode with manual MCP config
-opencode --mcp-config manual_config.json
-```
 
 ## Configuration
 
@@ -77,7 +93,7 @@ opencode --mcp-config manual_config.json
 ### Add MCP Server
 
 ```bash
-opencode mcp add qmcp -- uv run python -m qmcp.server
+opencode mcp add qmcp -- qmcp
 ```
 
 ### Manage MCP Servers
@@ -91,18 +107,13 @@ opencode mcp logout qmcp    # Remove MCP server
 ## Development
 
 ```bash
-make test        # Run tests
-make lint        # Lint code
-make format      # Format code
-make mcp-dev     # Run with MCP inspector
-```
-
-With environment variables:
-
-```bash
-QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp -- uv run python -m qmcp.server
+make install      # Install dependencies
+make test         # Run tests
+make lint         # Lint code
+make format       # Format code
+make mcp-dev      # Run with MCP inspector
 ```
 
 ## License
 
-MIT
+Apache 2.0
