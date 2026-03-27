@@ -179,7 +179,7 @@ class DiagnosticsManager:
             collection_name=collection,
             total_vectors=len(all_points),
             total_files=len(files),
-            storage_bytes=info.get("vectors_count"),  # Approximate
+            storage_bytes=info.get("indexed_vectors_count"),  # Approximate
             status=info.get("status", "unknown"),
             file_types=dict(file_types),
             chunk_type_distribution=dict(chunk_type_dist),

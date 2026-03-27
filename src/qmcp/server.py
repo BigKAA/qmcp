@@ -401,7 +401,7 @@ async def get_collections_status() -> str:
             info = client.get_collection_info(name)
             lines.append(f"## {name}")
             lines.append(f"- Points: {info.get('points_count', 0)}")
-            lines.append(f"- Vectors: {info.get('vectors_count', 0)}")
+            lines.append(f"- Indexed Vectors: {info.get('indexed_vectors_count', 0)}")
             lines.append(f"- Status: {info.get('status', 'unknown')}")
             lines.append("")
 

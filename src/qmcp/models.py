@@ -68,8 +68,8 @@ class CollectionInfo(BaseModel):
     """Information about a collection."""
 
     name: str
-    vectors_count: int
     points_count: int
+    indexed_vectors_count: int
     status: str
 
 

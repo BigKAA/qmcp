@@ -120,8 +120,8 @@ class QdrantClientWrapper:
         info = self.client.get_collection(collection_name=name)
         return {
             "name": name,
-            "vectors_count": info.vectors_count,
             "points_count": info.points_count,
+            "indexed_vectors_count": info.indexed_vectors_count,
             "status": info.status.name,
         }
 

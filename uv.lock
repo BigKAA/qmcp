@@ -1580,8 +1580,8 @@ fastembed = [
 ]
 
 [[package]]
-name = "qmcp"
-version = "0.1.1"
+name = "qmcp-qdrant"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
