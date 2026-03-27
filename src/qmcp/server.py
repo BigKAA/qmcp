@@ -292,7 +292,7 @@ async def qdrant_get_status() -> dict[str, Any]:
 
         return {
             "status": "healthy",
-            "version": "0.1.0",
+            "version": "0.1.3",
             "qdrant_connected": client.is_connected,
             "collections": collections,
             "watcher_active": _watcher.is_running if _watcher else False,
@@ -301,7 +301,7 @@ async def qdrant_get_status() -> dict[str, Any]:
     except QdrantConnectionError:
         return {
             "status": "disconnected",
-            "version": "0.1.0",
+            "version": "0.1.3",
             "qdrant_connected": False,
             "collections": [],
             "watcher_active": False,
