@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - N/A
 
+## [0.1.2] - 2026-03-27
+
+### Added
+- N/A
+
+### Changed
+- Rename package to qmcp-qdrant (due to name conflict on PyPI)
+- Add entry point for command-line execution
+
+### Fixed
+- N/A
+
+### Security
+- N/A
+
 ## [0.1.1] - 2026-03-27
 
 ### Added
