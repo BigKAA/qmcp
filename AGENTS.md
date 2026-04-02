@@ -286,6 +286,39 @@ class QdrantWrapper:
         # Implementation...
 ```
 
+## Publishing to PyPI
+
+### Prerequisites
+
+1. Store PyPI token in `~/.pypirc` (NEVER commit this file to git):
+   ```ini
+   [pypi]
+   username = __token__
+   password = pypi-your-token-here
+   ```
+
+### Build and Publish
+
+```bash
+# 1. Create build environment
+uv venv /tmp/build-venv --clear
+source /tmp/build-venv/bin/activate
+
+# 2. Install build tools
+uv pip install build twine hatch
+
+# 3. Build package
+hatch build wheel
+
+# 4. Upload to PyPI (uses ~/.pypirc config)
+twine upload wheel/* -c ~/.pypirc
+```
+
+### Security Rules
+- **Never** store PyPI tokens in AGENTS.md, .env, or any git-tracked files
+- **Never** commit `~/.pypirc` to version control
+- Use `~/.pypirc` for local token storage
+
 ## Dependencies
 
 Key dependencies in `pyproject.toml`:
