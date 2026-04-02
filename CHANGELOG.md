@@ -19,6 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - N/A
 
+## [0.1.6] - 2026-04-02
+
+### Added
+- Extended search filtering: `chunk_type`, `symbol_name`, `language`, `file_path_pattern` parameters
+- Rich metadata extraction: signatures, symbol names, imports for Python files
+- `signature` field in search results for functions/classes
+- `symbol_names` list for referenced symbols
+- `imports` list for import statements
+- `language` field for filtering by programming language
+- Improved Python AST parser with full signature extraction
+- Support for async function definitions
+- Type annotation extraction (including Union types with `|`)
+
+### Changed
+- Enhanced `ParsedChunk` dataclass with extended metadata fields
+- Improved MarkdownParser with code block language extraction
+- Updated MultiLanguageParser with import extraction fallback
+
+### Fixed
+- N/A
+
+### Security
+- N/A
+
 ## [0.1.5] - 2026-03-27
 
 ### Added
