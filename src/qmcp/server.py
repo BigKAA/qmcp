@@ -22,6 +22,7 @@ from pydantic import Field
 from .cleanup import CleanupManager
 from .client import QdrantClientWrapper, QdrantConnectionError
 from .config import get_settings
+from .__init__ import __version__
 from .diagnostics import DiagnosticsManager
 from .indexer import Indexer
 from .logging_config import get_logger, init_logging
@@ -312,7 +313,7 @@ async def qdrant_get_status() -> dict[str, Any]:
 
         return {
             "status": "healthy",
-            "version": "0.1.3",
+            "version": __version__,
             "qdrant_connected": client.is_connected,
             "collections": collections,
             "watcher_active": _watcher.is_running if _watcher else False,
@@ -321,7 +322,7 @@ async def qdrant_get_status() -> dict[str, Any]:
     except QdrantConnectionError:
         return {
             "status": "disconnected",
-            "version": "0.1.3",
+            "version": __version__,
             "qdrant_connected": False,
             "collections": [],
             "watcher_active": False,

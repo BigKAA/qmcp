@@ -135,16 +135,31 @@ pytest tests/test_parser.py -v
 
 ```bash
 # Add MCP server to OpenCode
-opencode mcp add qmcp -- uv run python -m qmcp.server
+opencode mcp add qmcp uv run python -m qmcp.server
+```
 
-# With environment variables
-QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp -- uv run python -m qmcp.server
+Or edit `~/.config/opencode/opencode.json` directly (for environment variables):
 
-# List MCP servers
-opencode mcp list
+```json
+{
+  "mcp": {
+    "qmcp": {
+      "type": "local",
+      "command": ["uv", "run", "python", "-m", "qmcp.server"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
+```
 
-# Debug
-opencode mcp debug qmcp
+### Manage MCP Servers
+
+```bash
+opencode mcp list          # List all MCP servers
+opencode mcp debug qmcp    # Debug connection issues
+opencode mcp logout qmcp   # Remove MCP server
 ```
 
 ### Available Tools

@@ -58,18 +58,47 @@ export QDRANT_URL=http://localhost:6333
 ### 2. Добавьте MCP Server в OpenCode
 
 ```bash
-opencode mcp add qmcp-qdrant -- qmcp-qdrant
+opencode mcp add qmcp-qdrant qmcp-qdrant
 ```
 
-С кастомным URL Qdrant:
-
-```bash
-QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp-qdrant -- qmcp-qdrant
-```
+> ⚠️ **Примечание**: Переменные окружения необходимо указать в файле `~/.config/opencode/opencode.json` (см. ниже).
 
 ### 3. Готово!
 
 OpenCode автоматически найдёт и использует инструменты семантического поиска.
+
+### Ручная настройка (Альтернатива)
+
+Если команда `opencode mcp add` не работает, отредактируйте `~/.config/opencode/opencode.json` напрямую:
+
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "local",
+      "command": ["qmcp-qdrant"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
+```
+
+Для Python модуля:
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "local",
+      "command": ["python", "-m", "qmcp.server"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
+```
 
 ## Примечания об индексации
 
@@ -201,7 +230,23 @@ skills/qmcp-manager/SKILL.md
 ### Добавление MCP Server
 
 ```bash
-opencode mcp add qmcp-qdrant -- qmcp-qdrant
+opencode mcp add qmcp-qdrant qmcp-qdrant
+```
+
+Или отредактируйте `~/.config/opencode/opencode.json` напрямую (необходимо для переменных окружения):
+
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "local",
+      "command": ["qmcp-qdrant"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
 ```
 
 ### Управление MCP Servers

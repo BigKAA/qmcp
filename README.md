@@ -56,18 +56,47 @@ For Kubernetes deployment, see [Qdrant on Kubernetes](https://github.com/BigKAA/
 ### 2. Add MCP Server to OpenCode
 
 ```bash
-opencode mcp add qmcp-qdrant -- qmcp-qdrant
+opencode mcp add qmcp-qdrant qmcp-qdrant
 ```
 
-With custom Qdrant URL:
-
-```bash
-QDRANT_URL=http://192.168.218.190:6333 opencode mcp add qmcp-qdrant -- qmcp-qdrant
-```
+> ⚠️ **Note**: Environment variables must be set in `~/.config/opencode/opencode.json` config file (see below).
 
 ### 3. That's It!
 
 OpenCode will automatically discover and use the semantic search tools.
+
+### Manual Configuration (Alternative)
+
+If `opencode mcp add` doesn't work, edit `~/.config/opencode/opencode.json` directly:
+
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "local",
+      "command": ["qmcp-qdrant"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
+```
+
+For Python module:
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "local",
+      "command": ["python", "-m", "qmcp.server"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
+```
 
 ## Indexing Notes
 
@@ -199,7 +228,23 @@ skills/qmcp-manager/SKILL.md
 ### Add MCP Server
 
 ```bash
-opencode mcp add qmcp-qdrant -- qmcp-qdrant
+opencode mcp add qmcp-qdrant qmcp-qdrant
+```
+
+Or edit `~/.config/opencode/opencode.json` directly (required for environment variables):
+
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "local",
+      "command": ["qmcp-qdrant"],
+      "environment": {
+        "QDRANT_URL": "http://192.168.218.190:6333"
+      }
+    }
+  }
+}
 ```
 
 ### Manage MCP Servers
