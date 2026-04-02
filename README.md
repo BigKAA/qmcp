@@ -1,6 +1,13 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-Semantic search server for code and documentation using Qdrant vector database.
+[![Version](https://img.shields.io/badge/version-0.1.5-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
+
+**Semantic search server for code and documentation using Qdrant vector database.**
+
+**Language:** English | [Русский](./README.ru.md)
 
 ## Features
 
@@ -99,6 +106,13 @@ The indexer automatically respects `.gitignore` files, significantly reducing in
 | `qdrant_search` | Semantic search in code/docs |
 | `qdrant_index_directory` | Index a directory |
 | `qdrant_reindex` | Reindex (full or incremental) |
+
+> 💡 **Tip**: Use `qdrant_search` with filters for precise results:
+> - `chunk_type` — filter by code type (function_def, class_def, etc.)
+> - `symbol_name` — find exact symbol by name
+> - `language` — filter by programming language
+>
+> See [docs/STRUCTURED_METADATA.md](./docs/STRUCTURED_METADATA.md) for detailed examples.
 
 ### Collection Management
 

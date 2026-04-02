@@ -35,6 +35,7 @@ LANGUAGE_CONFIGS = {
                 body: (block) @body)
         """,
         "class_query": "(type_declaration (type_spec (identifier) @class_name))",
+        "import_query": "(import_declaration (import_spec (string_literal) @import))",
     },
     ".js": {
         "language": "javascript",
@@ -49,6 +50,7 @@ LANGUAGE_CONFIGS = {
                 body: (block_statement) @body)
         """,
         "class_query": "(class_declaration (identifier) @class_name)",
+        "import_query": "(import_statement (_ (string_literal) @import))",
     },
     ".ts": {
         "language": "typescript",
@@ -62,6 +64,7 @@ LANGUAGE_CONFIGS = {
                 body: (block_statement) @body)
         """,
         "class_query": "(class_declaration (identifier) @class_name)",
+        "import_query": "(import_statement (_ (string_literal) @import))",
     },
     ".java": {
         "language": "java",
@@ -82,6 +85,7 @@ LANGUAGE_CONFIGS = {
                 name: (identifier) @class_name
                 body: (class_body) @body)
         """,
+        "import_query": "(import_declaration (scoped_identifier) @import)",
     },
     ".cs": {
         "language": "csharp",
@@ -102,12 +106,18 @@ LANGUAGE_CONFIGS = {
                 name: (identifier) @class_name
                 body: (class_body) @body)
         """,
+        "import_query": "(using_directive (qualified_identifier) @import)",
     },
 }
 
 
 class MultiLanguageParser(BaseParser):
-    """Parser for multiple languages using tree-sitter."""
+    """Parser for multiple languages using tree-sitter.
+
+    Currently provides basic file-level chunking with metadata.
+    Full tree-sitter AST traversal is available but requires
+    language bindings to be installed.
+    """
 
     def __init__(self):
         self._parsers: dict[str, Parser] = {}
@@ -140,7 +150,7 @@ class MultiLanguageParser(BaseParser):
 
         return self.parse_content_by_lang(content, str(file_path), config["language"])
 
-    def parse_content(self, content: str) -> list[ParsedChunk]:
+    def parse_content(self, content: str, file_path: str | None = None) -> list[ParsedChunk]:
         """Not implemented - use parse_content_by_lang."""
         raise NotImplementedError("Use parse_content_by_lang")
 
@@ -150,34 +160,89 @@ class MultiLanguageParser(BaseParser):
         file_path: str,
         language: str,
     ) -> list[ParsedChunk]:
-        """Parse content for a specific language."""
-        # This is a simplified version - full implementation would
-        # need to properly initialize tree-sitter languages
-        # For now, return a basic chunk with the entire file
-        chunks = []
+        """Parse content for a specific language.
 
-        # Create a basic chunk for the entire file
+        Extracts file-level chunk with metadata. For full AST-based
+        extraction, tree-sitter language bindings need to be initialized.
+        """
+        chunks = []
         lines = content.split("\n")
-        if lines:
-            chunks.append(
-                ParsedChunk(
-                    file_path=file_path,
-                    content=content[:5000],  # Limit content size
-                    chunk_type="file",
-                    name=Path(file_path).stem,
-                    line_start=1,
-                    line_end=len(lines),
-                    docstring="",
-                )
+
+        if not lines:
+            return chunks
+
+        # Determine file extension for chunk_type
+        suffix = Path(file_path).suffix.lower()
+        lang_config = LANGUAGE_CONFIGS.get(suffix, {})
+        lang_name = lang_config.get("language", language)
+
+        # Extract imports using simple regex patterns (fallback when tree-sitter unavailable)
+        imports = self._extract_imports_simple(content, suffix)
+
+        # Create a file-level chunk with metadata
+        chunks.append(
+            ParsedChunk(
+                file_path=file_path,
+                content=content[:5000],  # Limit content size
+                chunk_type="file",
+                name=Path(file_path).stem,
+                line_start=1,
+                line_end=len(lines),
+                docstring="",
+                signature=None,
+                symbol_names=[Path(file_path).stem],
+                imports=imports,
+                language=lang_name,
             )
+        )
 
         return chunks
+
+    def _extract_imports_simple(self, content: str, suffix: str) -> list[str]:
+        """Extract imports using simple patterns (fallback).
+
+        This is a simplified version that works without tree-sitter.
+        For full accuracy, use tree-sitter queries.
+        """
+        imports = []
+        import_prefixes = {
+            ".go": ("import", '"'),
+            ".js": ("import", "'"),
+            ".ts": ("import", "'"),
+            ".java": ("import", ";"),
+            ".cs": ("using", ";"),
+        }
+
+        prefix, _ = import_prefixes.get(suffix, (None, None))
+        if not prefix:
+            return imports
+
+        for line in content.split("\n"):
+            line = line.strip()
+            if line.startswith(prefix):
+                # Extract import path
+                if '"' in line:
+                    start = line.index('"') + 1
+                    end = line.rindex('"')
+                    imports.append(line[start:end])
+                elif "'" in line:
+                    start = line.index("'") + 1
+                    end = line.rindex("'")
+                    imports.append(line[start:end])
+                elif ";" in line and suffix == ".java":
+                    # Java import without quotes
+                    parts = line.replace("import", "").replace(";", "").strip()
+                    if parts:
+                        imports.append(parts)
+
+        return imports
 
 
 class MarkdownParser(BaseParser):
     """Parser for Markdown documentation files."""
 
     extensions = [".md", ".mdx"]
+    language = "markdown"
 
     def can_parse(self, file_path: Path) -> bool:
         return file_path.suffix.lower() in self.extensions
@@ -191,28 +256,44 @@ class MarkdownParser(BaseParser):
 
         return self.parse_content(content, str(file_path))
 
-    def parse_content(self, content: str, file_path: str) -> list[ParsedChunk]:
+    def parse_content(self, content: str, file_path: str | None = None) -> list[ParsedChunk]:
         """Parse Markdown content."""
         chunks = []
         lines = content.split("\n")
 
         # Extract title
         title = ""
-        for line in lines[:5]:
+        for line in lines[:10]:
             if line.strip().startswith("# "):
                 title = line.strip()[2:]
                 break
 
+        # Extract code blocks for additional metadata
+        code_blocks = []
+        in_code_block = False
+        for line in lines:
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
+            elif in_code_block:
+                # Extract language from code block
+                lang = line.strip().split()[0] if line.strip() else ""
+                if lang:
+                    code_blocks.append(lang)
+
         # Create single chunk for the file
         chunks.append(
             ParsedChunk(
-                file_path=file_path,
+                file_path=file_path or "unknown",
                 content=content[:10000],  # Limit size
                 chunk_type="document",
-                name=title or Path(file_path).stem,
+                name=title or Path(file_path or "unknown").stem,
                 line_start=1,
                 line_end=len(lines),
-                docstring="",
+                docstring=title,
+                signature=None,
+                symbol_names=[title] if title else [],
+                imports=code_blocks,  # Code block languages as "imports"
+                language=self.language,
             )
         )
 

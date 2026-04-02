@@ -206,6 +206,11 @@ class Indexer:
                     "docstring": chunk.docstring,
                     "line_start": chunk.line_start,
                     "line_end": chunk.line_end,
+                    # Extended metadata for structured filtering
+                    "signature": chunk.signature,
+                    "symbol_names": chunk.symbol_names,
+                    "imports": chunk.imports,
+                    "language": chunk.language,
                 },
             }
             points.append(point)

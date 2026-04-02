@@ -131,23 +131,73 @@ class QdrantClientWrapper:
         query: str,
         limit: int = 5,
         score_threshold: float = 0.7,
+        chunk_type: str | None = None,
+        symbol_name: str | None = None,
+        language: str | None = None,
+        file_path_pattern: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search for similar vectors.
+        """Search for similar vectors with optional structured filters.
 
         Args:
             collection: Collection name
             query: Query text
             limit: Max results
             score_threshold: Minimum score
+            chunk_type: Filter by chunk type (e.g., "function_def", "class_def")
+            symbol_name: Filter by exact symbol name match
+            language: Filter by programming language (e.g., "python", "go")
+            file_path_pattern: Filter by file path glob pattern (e.g., "*.py")
 
         Returns:
             List of search results with payload
         """
+        # Build filter conditions
+        filter_conditions = []
+
+        if chunk_type:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="type",
+                    match=models.MatchValue(value=chunk_type),
+                )
+            )
+
+        if symbol_name:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="symbol_names",
+                    match=models.MatchAny(any=[symbol_name]),
+                )
+            )
+
+        if language:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="language",
+                    match=models.MatchValue(value=language),
+                )
+            )
+
+        if file_path_pattern:
+            # Convert glob pattern to Qdrant match
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="file_path",
+                    match=models.MatchText(text=file_path_pattern),
+                )
+            )
+
+        # Build query filter
+        query_filter = None
+        if filter_conditions:
+            query_filter = models.Filter(must=filter_conditions)
+
         results = self.client.query_points(
             collection_name=collection,
             query=models.Document(text=query, model=self._embedding_model),
             limit=limit,
             score_threshold=score_threshold,
+            query_filter=query_filter,
             with_payload=True,
         )
 
@@ -159,6 +209,11 @@ class QdrantClientWrapper:
                 "type": hit.payload.get("type", "unknown"),
                 "line_start": hit.payload.get("line_start"),
                 "line_end": hit.payload.get("line_end"),
+                # Extended metadata
+                "signature": hit.payload.get("signature"),
+                "symbol_names": hit.payload.get("symbol_names", []),
+                "imports": hit.payload.get("imports", []),
+                "language": hit.payload.get("language", "unknown"),
             }
             for hit in results.points
         ]

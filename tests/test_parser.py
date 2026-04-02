@@ -40,10 +40,15 @@ def hello(name: str) -> str:
         chunks = parser.parse_content(content, "test.py")
 
         assert len(chunks) >= 1
-        func_chunk = next((c for c in chunks if c.chunk_type == "function"), None)
+        func_chunk = next((c for c in chunks if c.chunk_type == "function_def"), None)
         assert func_chunk is not None
         assert func_chunk.name == "hello"
         assert "def hello" in func_chunk.content
+        # Check new metadata fields
+        assert func_chunk.signature == "def hello(name: str) -> str"
+        assert "hello" in func_chunk.symbol_names
+        assert "name" in func_chunk.symbol_names
+        assert func_chunk.language == "python"
 
     def test_parse_class(self):
         """Test parsing a class."""
@@ -57,9 +62,13 @@ class User:
 '''
         chunks = parser.parse_content(content, "test.py")
 
-        class_chunk = next((c for c in chunks if c.chunk_type == "class"), None)
+        class_chunk = next((c for c in chunks if c.chunk_type == "class_def"), None)
         assert class_chunk is not None
         assert class_chunk.name == "User"
+        # Check new metadata fields
+        assert class_chunk.signature == "class User"
+        assert "User" in class_chunk.symbol_names
+        assert class_chunk.language == "python"
 
     def test_parse_async_function(self):
         """Test parsing async function."""
@@ -71,9 +80,30 @@ async def fetch_data(url: str) -> dict:
 '''
         chunks = parser.parse_content(content, "test.py")
 
-        func_chunk = next((c for c in chunks if c.chunk_type == "function"), None)
+        func_chunk = next((c for c in chunks if c.chunk_type == "async_function_def"), None)
         assert func_chunk is not None
         assert func_chunk.name == "fetch_data"
+        assert func_chunk.signature == "async def fetch_data(url: str) -> dict"
+
+    def test_parse_function_with_imports(self):
+        """Test that imports are extracted."""
+        parser = PythonParser()
+        content = '''
+from typing import List, Dict
+import json
+
+def process(data: List[str]) -> Dict[str, int]:
+    """Process data."""
+    return {}
+'''
+        chunks = parser.parse_content(content, "test.py")
+
+        func_chunk = next((c for c in chunks if c.chunk_type == "function_def"), None)
+        assert func_chunk is not None
+        # Check imports are extracted (as separate items per alias)
+        assert "from typing import List" in func_chunk.imports
+        assert "from typing import Dict" in func_chunk.imports
+        assert "import json" in func_chunk.imports
 
 
 class TestParserRegistry:

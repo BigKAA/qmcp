@@ -95,11 +95,28 @@ async def qdrant_search(
     score_threshold: float = Field(
         default=0.7, ge=0.0, le=1.0, description="Minimum score threshold"
     ),
+    chunk_type: str | None = Field(
+        default=None,
+        description="Filter by chunk type (e.g., 'function_def', 'class_def', 'document')",
+    ),
+    symbol_name: str | None = Field(
+        default=None,
+        description="Filter by exact symbol name (function, class, variable name)",
+    ),
+    language: str | None = Field(
+        default=None,
+        description="Filter by programming language (e.g., 'python', 'go', 'javascript')",
+    ),
 ) -> list[dict[str, Any]]:
     """Search for similar code or documentation using semantic search.
 
     This tool performs vector search in Qdrant to find relevant code snippets
     or documentation based on semantic similarity to the query.
+
+    Use optional filters to narrow down results:
+    - chunk_type: Find only specific code constructs (function_def, class_def, etc.)
+    - symbol_name: Find exact symbol by name (e.g., 'get_user', 'MyClass')
+    - language: Find only files of a specific language
     """
     try:
         client = get_qdrant_client()
@@ -108,6 +125,9 @@ async def qdrant_search(
             query=query,
             limit=limit,
             score_threshold=score_threshold,
+            chunk_type=chunk_type,
+            symbol_name=symbol_name,
+            language=language,
         )
         return results
     except QdrantConnectionError as e:
