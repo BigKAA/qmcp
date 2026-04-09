@@ -353,7 +353,7 @@ class QdrantClientWrapper:
 
         # Generate embeddings for all points
         contents = [point["content"] for point in points]
-        all_embeddings = list(self._embedding_model_instance.doc_embed(contents))
+        all_embeddings = list(self._embedding_model_instance.passage_embed(contents))
 
         structured_points = []
         for i, point in enumerate(points):
