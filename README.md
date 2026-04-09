@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -115,11 +115,14 @@ The indexer automatically respects `.gitignore` files, significantly reducing in
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
+| `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
 | `WATCH_PATHS` | `/data/repo` | Paths to watch |
 | `BATCH_SIZE` | `50` | Batch size for indexing |
 | `DEBOUNCE_SECONDS` | `5` | Debounce delay |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
+
+> 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~13MB), subsequent launches use cached version.
 
 ## MCP Tools
 
@@ -259,6 +262,14 @@ make lint         # Lint code
 make format       # Format code
 make mcp-dev      # Run with MCP inspector
 ```
+
+## Troubleshooting
+
+If you encounter issues, see the [Troubleshooting Guide](./docs/TROUBLESHOOTING.md) for:
+
+- **[Embedding Model Issues](./docs/TROUBLESHOOTING.md#embedding-model-issues)** — `indexed_vectors_count: 0` diagnosis and fix
+- **[Connection Problems](./docs/TROUBLESHOOTING.md#connection-problems)** — Qdrant connection troubleshooting
+- **[Search Returns No Results](./docs/TROUBLESHOOTING.md#search-returns-no-results)** — Empty search results debugging
 
 ## License
 

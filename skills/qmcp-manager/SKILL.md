@@ -185,6 +185,29 @@ For project isolation, use project-specific names like `myproject-code`, `myproj
 | "Reindex" | qdrant_reindex (incremental) |
 | "Search code" | qdrant_search |
 | "Index new files" | qdrant_index_directory |
+| "Search not working" / "null scores" | Check indexed_vectors_count |
+
+## Common Issues
+
+### indexed_vectors_count: 0
+
+If `qdrant_get_collection_info` shows:
+```json
+{"points_count": 79, "indexed_vectors_count": 0}
+```
+
+This means **vectors were created but have zero dimensionality** - the embedding model failed to initialize. This typically happens when fastembed is not properly installed.
+
+**Diagnosis**:
+1. `qdrant_search(collection="...", query="test", limit=1)` - returns null scores or empty
+2. Check MCP server logs for fastembed initialization errors
+
+**Solution**: Full reindex to recreate vectors with working embedding model:
+```
+qdrant_reindex(collection="your-collection", path="/path/to/project", mode="full")
+```
+
+For more details, see [TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md#embedding-model-issues).
 
 ## Safety Rules
 

@@ -133,6 +133,15 @@ class DiagnosticsManager:
         indexed_at_values: list[str] = []
         issues: list[str] = []
 
+        # Validate vector dimensions (after issues is defined)
+        vector_validation = self.qdrant.validate_collection_vectors(collection)
+        if not vector_validation["is_valid"]:
+            issues.append(
+                f"CRITICAL: Vectors have zero dimensions! "
+                f"This means the embedding model failed during indexing. "
+                f"Run: qdrant_reindex(collection='{collection}', path='/path/to/project', mode='full')"
+            )
+
         for file_path, data in file_data.items():
             chunk_count = len(data["chunks"])
             total_lines = max(data["lines"]) if data["lines"] else 0

@@ -19,26 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - N/A
 
-## [0.1.6] - 2026-04-02
+## [0.2.0] - 2026-04-09
 
 ### Added
-- Extended search filtering: `chunk_type`, `symbol_name`, `language`, `file_path_pattern` parameters
-- Rich metadata extraction: signatures, symbol names, imports for Python files
-- `signature` field in search results for functions/classes
-- `symbol_names` list for referenced symbols
-- `imports` list for import statements
-- `language` field for filtering by programming language
-- Improved Python AST parser with full signature extraction
-- Support for async function definitions
-- Type annotation extraction (including Union types with `|`)
+- **Embedding model validation on startup**: MCP server now validates the embedding model when connecting to Qdrant. If fastembed is not installed or model download fails, server exits with clear error message
+- **Custom embedding cache directory**: New `EMBEDDING_CACHE_DIR` environment variable allows specifying where to store cached models (persists across restarts)
+- **Model instance caching**: Embedding model is loaded once and reused for all operations (search, upsert)
+- **Vector validation in diagnostics**: `qdrant_diagnose_collection` now detects and warns about zero-dimension vectors
+- **Troubleshooting documentation**: Added `docs/TROUBLESHOOTING.md` with detailed solutions for common issues
+- Russian README translation (`README.ru.md`)
+- Structured metadata documentation (`docs/STRUCTURED_METADATA.md`, `docs/STRUCTURED_METADATA.ru.md`)
+- OpenCode skill with diagnostic workflows
 
 ### Changed
+- **Improved search performance**: Now uses pre-generated embeddings instead of `models.Document` which created new model instances on each call
+- **Better error messages**: Network errors during model download are clearly reported
 - Enhanced `ParsedChunk` dataclass with extended metadata fields
 - Improved MarkdownParser with code block language extraction
 - Updated MultiLanguageParser with import extraction fallback
 
 ### Fixed
-- N/A
+- **Zero-dimension vectors**: Fixed issue where vectors were created with dimensionality 0 when fastembed failed silently
+- Fixed diagnostics mock in tests for `validate_collection_vectors` method
+- Fixed import ordering in server.py
 
 ### Security
 - N/A

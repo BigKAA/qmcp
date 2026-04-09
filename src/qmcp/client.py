@@ -45,6 +45,8 @@ class QdrantClientWrapper:
         self.api_key = api_key or settings.qdrant_api_key
         self._client: QdrantClient | None = None
         self._embedding_model = settings.embedding_model
+        self._embedding_cache_dir = settings.embedding_cache_dir
+        self._embedding_model_instance: Any = None
 
     def connect(self) -> None:
         """Establish connection to Qdrant."""
@@ -58,9 +60,86 @@ class QdrantClientWrapper:
             # Test connection
             self._client.get_collections()
             self.logger.info("Successfully connected to Qdrant")
+            # Validate embedding model is available
+            self._load_embedding_model()
         except Exception as e:
             self.logger.error(f"Failed to connect to Qdrant: {e}")
             raise QdrantConnectionError(f"Failed to connect to Qdrant at {self.url}: {e}")
+
+    def _load_embedding_model(self) -> None:
+        """Load and cache the embedding model.
+
+        Downloads the model if not cached, then validates it works.
+        This method ensures the model is available before any indexing operations.
+        """
+        from fastembed import TextEmbedding
+
+        # If model already loaded and cached, verify it's still valid
+        if self._embedding_model_instance is not None:
+            try:
+                # Quick verification that model still works
+                list(self._embedding_model_instance.query_embed("test"))
+                self.logger.debug("Embedding model instance verified")
+                return
+            except Exception:
+                # Model instance corrupted, reload
+                self.logger.warning("Embedding model instance corrupted, reloading...")
+                self._embedding_model_instance = None
+
+        self.logger.info(
+            f"Loading embedding model: {self._embedding_model}"
+            + (f" (cache: {self._embedding_cache_dir})" if self._embedding_cache_dir else "")
+        )
+
+        try:
+            # Initialize model with custom cache directory if specified
+            init_kwargs: dict[str, Any] = {"model_name": self._embedding_model}
+            if self._embedding_cache_dir:
+                init_kwargs["cache_dir"] = self._embedding_cache_dir
+                self.logger.info(f"Using custom model cache directory: {self._embedding_cache_dir}")
+
+            self._embedding_model_instance = TextEmbedding(**init_kwargs)
+
+            # Validate model works with a test encode
+            test_result = list(self._embedding_model_instance.query_embed("validation_test"))
+            if not test_result or len(test_result[0]) == 0:
+                raise QdrantConnectionError(
+                    f"Embedding model '{self._embedding_model}' returned empty vectors. "
+                    f"Model may be corrupted or incompatible."
+                )
+
+            self.logger.info(
+                f"Embedding model loaded successfully. Vector dimension: {len(test_result[0])}"
+            )
+
+        except ImportError:
+            raise QdrantConnectionError(
+                "fastembed is not installed. Install it with: pip install qdrant-client[fastembed]"
+            )
+        except OSError as e:
+            # Network errors when trying to download model
+            if "Could not download" in str(e) or "connection" in str(e).lower():
+                cache_info = (
+                    f" at '{self._embedding_cache_dir}'"
+                    if self._embedding_cache_dir
+                    else " (default location)"
+                )
+                raise QdrantConnectionError(
+                    f"Failed to download embedding model '{self._embedding_model}'"
+                    f"{cache_info}. Network error: {e}. "
+                    f"Please check your internet connection and try again."
+                )
+            raise QdrantConnectionError(
+                f"Failed to load embedding model '{self._embedding_model}': {e}"
+            )
+        except Exception as e:
+            cache_info = (
+                f" from cache '{self._embedding_cache_dir}'" if self._embedding_cache_dir else ""
+            )
+            raise QdrantConnectionError(
+                f"Failed to load embedding model '{self._embedding_model}'{cache_info}: {e}. "
+                f"The model may need to be re-downloaded."
+            )
 
     @property
     def client(self) -> QdrantClient:
@@ -123,6 +202,29 @@ class QdrantClientWrapper:
             "points_count": info.points_count,
             "indexed_vectors_count": info.indexed_vectors_count,
             "status": info.status.name,
+            "vector_size": info.config.params.size if info.config and info.config.params else 0,
+        }
+
+    def validate_collection_vectors(self, name: str) -> dict[str, Any]:
+        """Validate that collection vectors have proper dimensions.
+
+        Returns diagnostic info about the collection vector health.
+        """
+        info = self.client.get_collection(collection_name=name)
+        vector_size = info.config.params.size if info.config and info.config.params else 0
+
+        return {
+            "collection": name,
+            "points_count": info.points_count,
+            "vector_size": vector_size,
+            "is_valid": vector_size > 0,
+            "warning": (
+                f"Vectors have zero dimensions! "
+                f"This usually means fastembed failed during indexing. "
+                f"Run: qdrant_reindex(collection='{name}', path='/path/to/project', mode='full')"
+            )
+            if vector_size == 0
+            else None,
         }
 
     def search(
@@ -192,9 +294,18 @@ class QdrantClientWrapper:
         if filter_conditions:
             query_filter = models.Filter(must=filter_conditions)
 
+        # Generate query embedding using cached model
+        if self._embedding_model_instance is None:
+            self._load_embedding_model()
+
+        query_vectors = list(self._embedding_model_instance.query_embed(query))
+        if not query_vectors or len(query_vectors[0]) == 0:
+            self.logger.error("Query embedding returned empty vector")
+            return []
+
         results = self.client.query_points(
             collection_name=collection,
-            query=models.Document(text=query, model=self._embedding_model),
+            query=query_vectors[0],  # Use pre-generated vector
             limit=limit,
             score_threshold=score_threshold,
             query_filter=query_filter,
@@ -236,15 +347,25 @@ class QdrantClientWrapper:
         """
         from qdrant_client.models import PointStruct
 
+        # Ensure embedding model is loaded
+        if self._embedding_model_instance is None:
+            self._load_embedding_model()
+
+        # Generate embeddings for all points
+        contents = [point["content"] for point in points]
+        all_embeddings = list(self._embedding_model_instance.doc_embed(contents))
+
         structured_points = []
-        for point in points:
+        for i, point in enumerate(points):
+            embedding = all_embeddings[i]
+            if len(embedding) == 0:
+                self.logger.warning(f"Empty embedding for point {point['id']}, skipping")
+                continue
+
             structured_points.append(
                 PointStruct(
                     id=point["id"],
-                    vector=models.Document(
-                        text=point["content"],
-                        model=self._embedding_model,
-                    ),
+                    vector=embedding,
                     payload=point["payload"],
                 )
             )

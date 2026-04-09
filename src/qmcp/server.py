@@ -19,10 +19,10 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from .__init__ import __version__
 from .cleanup import CleanupManager
 from .client import QdrantClientWrapper, QdrantConnectionError
 from .config import get_settings
-from .__init__ import __version__
 from .diagnostics import DiagnosticsManager
 from .indexer import Indexer
 from .logging_config import get_logger, init_logging

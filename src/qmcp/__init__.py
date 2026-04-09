@@ -17,4 +17,4 @@
 Semantic search server for code and documentation using Qdrant vector database.
 """
 
-__version__ = "0.1.6"
+__version__ = "0.2.0"

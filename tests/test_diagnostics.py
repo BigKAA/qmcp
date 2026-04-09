@@ -37,6 +37,13 @@ class TestDiagnosticsManager:
             "points_count": 50,
             "status": "green",
         }
+        client.validate_collection_vectors.return_value = {
+            "collection": "test_collection",
+            "points_count": 50,
+            "vector_size": 384,
+            "is_valid": True,
+            "warning": None,
+        }
         return client
 
     @pytest.fixture

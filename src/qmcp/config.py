@@ -61,6 +61,10 @@ class Settings(BaseSettings):
         default="BAAI/bge-small-en-v1.5",
         description="Model name for generating embeddings",
     )
+    embedding_cache_dir: str | None = Field(
+        default=None,
+        description="Custom directory for embedding model cache. If not set, uses system default (/tmp/fastembed_cache)",
+    )
 
     # Server Configuration
     host: str = Field(
