@@ -42,6 +42,20 @@ cd qmcp
 make install
 ```
 
+## Updating
+
+### Via uv (Recommended)
+
+```bash
+uv tool upgrade qmcp-qdrant
+```
+
+### Via pip
+
+```bash
+pip install --upgrade qmcp-qdrant
+```
+
 ## Quick Start
 
 ### 1. Ensure Qdrant is running
