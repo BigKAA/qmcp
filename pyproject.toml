@@ -1,6 +1,6 @@
 [project]
 name = "qmcp-qdrant"
-version = "0.2.2"
+version = "0.2.3"
 description = "Qdrant MCP Server for OpenCode - semantic search for code and documentation"
 authors = [{name = "Artur", email = "artur@example.com"}]
 license = {text = "Apache-2.0"}

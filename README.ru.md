@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server для OpenCode
 
-[![Версия](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Версия](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![Лицензия](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -72,6 +72,9 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 
 > 💡 **Один глобальный MCP для нескольких проектов**: теперь `qmcp` использует двухуровневую стратегию автоиндексации.
 > Сервер автоматически запускает watcher для путей из `WATCH_PATHS`, а OpenCode/агенты должны гарантировать наблюдение за текущим workspace через `qdrant_watch_ensure(paths=[workspace_root])`.
+
+> 💡 **Формат WATCH_PATHS**: `WATCH_PATHS` поддерживает один абсолютный путь, список путей через запятую или JSON-массив строк. Например:
+> `/home/user/project`, `/home/user/project,/home/user/docs` или `["/home/user/project", "/home/user/docs"]`.
 
 ### 3. Готово!
 
@@ -161,6 +164,11 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 | `LOG_FORMAT` | `text` | Формат логов (`text` или `json`) |
 
 > 💡 **Кэш модели**: Установите `EMBEDDING_CACHE_DIR` для сохранения модели между запусками. Первый запуск загружает модель (~13MB), последующие используют кэш.
+
+> 💡 **Примеры WATCH_PATHS**:
+> - Один путь: `WATCH_PATHS=/home/user/project`
+> - Несколько путей: `WATCH_PATHS=/home/user/project,/home/user/docs`
+> - JSON-массив: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
 
 ## MCP Инструменты
 

@@ -15,10 +15,12 @@
 """Configuration management using Pydantic Settings."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
+
+import json
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -97,7 +99,10 @@ class Settings(BaseSettings):
     )
 
     # Watch Configuration
-    watch_paths: list[str] = Field(
+    watch_paths: Annotated[
+        list[str],
+        NoDecode,
+    ] = Field(
         default=["/data/repo"],
         description="List of paths to watch for changes",
     )
@@ -115,9 +120,21 @@ class Settings(BaseSettings):
     @field_validator("watch_paths", mode="before")
     @classmethod
     def parse_watch_paths(cls, v):
-        """Parse watch_paths from comma-separated string or list."""
+        """Parse watch_paths from comma-separated string, JSON string, or list."""
         if isinstance(v, str):
-            return [p.strip() for p in v.split(",") if p.strip()]
+            stripped_value = v.strip()
+            if not stripped_value:
+                return []
+
+            if stripped_value.startswith("["):
+                try:
+                    decoded_value = json.loads(stripped_value)
+                except json.JSONDecodeError:
+                    return [p.strip() for p in stripped_value.split(",") if p.strip()]
+                if isinstance(decoded_value, list):
+                    return [str(path).strip() for path in decoded_value if str(path).strip()]
+
+            return [p.strip() for p in stripped_value.split(",") if p.strip()]
         return v
 
     @field_validator("log_level", mode="before")

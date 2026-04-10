@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Version](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -72,6 +72,9 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 
 > 💡 **Global MCP, multiple projects**: `qmcp` now uses a two-level auto-indexing strategy.
 > The server automatically starts a watcher for configured `WATCH_PATHS`, and OpenCode/agents should ensure the current workspace is watched with `qdrant_watch_ensure(paths=[workspace_root])`.
+
+> 💡 **WATCH_PATHS format**: `WATCH_PATHS` accepts a single absolute path, a comma-separated list of paths, or a JSON array string. For example:
+> `/home/user/project`, `/home/user/project,/home/user/docs`, or `["/home/user/project", "/home/user/docs"]`.
 
 ### 3. That's It!
 
@@ -161,6 +164,11 @@ The indexer automatically respects `.gitignore` files, significantly reducing in
 | `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
 
 > 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~13MB), subsequent launches use cached version.
+
+> 💡 **WATCH_PATHS examples**:
+> - Single path: `WATCH_PATHS=/home/user/project`
+> - Multiple paths: `WATCH_PATHS=/home/user/project,/home/user/docs`
+> - JSON array: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
 
 ## MCP Tools
 

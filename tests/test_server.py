@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 import qmcp.server as server_module
+from qmcp.config import Settings
 from qmcp.server import (
     app_lifespan,
     qdrant_get_status,
@@ -118,3 +119,15 @@ class TestMcpServer:
 
         mock_ensure.assert_awaited_once()
         mock_stop.assert_awaited_once()
+
+    def test_settings_parse_watch_paths_from_plain_env_string(self):
+        """Test WATCH_PATHS accepts plain comma-separated environment values."""
+        settings = Settings.model_validate({"watch_paths": "/tmp/a,/tmp/b"})
+
+        assert settings.watch_paths == ["/tmp/a", "/tmp/b"]
+
+    def test_settings_parse_watch_paths_from_json_string(self):
+        """Test WATCH_PATHS still accepts JSON array environment values."""
+        settings = Settings.model_validate({"watch_paths": '["/tmp/a", "/tmp/b"]'})
+
+        assert settings.watch_paths == ["/tmp/a", "/tmp/b"]

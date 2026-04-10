@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-04-10
+
+### Added
+- Documentation examples for `WATCH_PATHS` covering single-path, comma-separated, and JSON-array formats in both English and Russian READMEs
+
+### Changed
+- Bumped package metadata and README version badges for the v0.2.3 release
+
+### Fixed
+- `WATCH_PATHS` environment parsing now accepts plain path strings in addition to comma-separated values and JSON arrays, preventing MCP server startup failures in global OpenCode configuration
+
+### Security
+- N/A
+
 ## [0.2.2] - 2026-04-10
 
 ### Added
