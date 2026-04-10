@@ -106,6 +106,20 @@ qmcp/
 2. Add to `Settings` class in `src/qmcp/config.py`
 3. Update README.md with documentation
 
+### Automatic File Indexing
+
+When implementing features that add or modify files in the project, ensure automatic indexing is enabled:
+
+1. **Use the `WATCH_PATHS` environment variable** - Set paths that should be watched for changes
+2. **Enable the file watcher** - Start the watcher with `qdrant_watch_start` or automatically on server start
+3. **Ensure incremental indexing** - New features should support incremental mode (`mode="incremental"`) to only update changed files
+
+The indexer automatically respects `.gitignore` - ensure your implementation follows this pattern:
+- Exclude `node_modules/`, `vendor/`, `.venv/`, `__pycache__/`
+- Exclude build artifacts (`dist/`, `build/`, `*.class`, `*.o`)
+- Exclude generated files (`*.pyc`, `*.pyo`, `.pytest_cache/`)
+- Exclude IDE settings (`.idea/`, `.vscode/`, `*.swp`)
+
 ## Testing
 
 ### Running Tests
