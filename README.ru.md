@@ -68,13 +68,28 @@ pip install --upgrade qmcp-qdrant
 opencode mcp add qmcp-qdrant qmcp-qdrant
 ```
 
-> ⚠️ **Примечание**: Переменные окружения необходимо указать в файле `~/.config/opencode/opencode.json` (см. ниже).
+> ⚠️ **Примечание**: Переменные окружения необходимо указать в файле `~/.config/opencode/opencode.json`.
 
-> 💡 **Один глобальный MCP для нескольких проектов**: теперь `qmcp` использует двухуровневую стратегию автоиндексации.
-> Сервер автоматически запускает watcher для путей из `WATCH_PATHS`, а OpenCode/агенты должны гарантировать наблюдение за текущим workspace через `qdrant_watch_ensure(paths=[workspace_root])`.
+## Конфигурация
 
-> 💡 **Формат WATCH_PATHS**: `WATCH_PATHS` поддерживает один абсолютный путь, список путей через запятую или JSON-массив строк. Например:
-> `/home/user/project`, `/home/user/project,/home/user/docs` или `["/home/user/project", "/home/user/docs"]`.
+| Переменная окружения | По умолчанию | Описание |
+|---------------------|-------------|----------|
+| `QDRANT_URL` | `http://localhost:6333` | URL сервера Qdrant |
+| `QDRANT_API_KEY` | (нет) | API ключ Qdrant (опционально) |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Модель эмбеддингов |
+| `EMBEDDING_CACHE_DIR` | (системный tmp) | Кастомная директория для кэша модели |
+| `WATCH_PATHS` | `/data/repo` | Базовые пути, которые автоматически отслеживаются при старте сервера |
+| `BATCH_SIZE` | `50` | Размер пакета для индексации |
+| `DEBOUNCE_SECONDS` | `5` | Задержка debounce |
+| `LOG_LEVEL` | `INFO` | Уровень логирования |
+| `LOG_FORMAT` | `text` | Формат л��гов (`text` или `json`) |
+
+> 💡 **Кэш модели**: Установите `EMBEDDING_CACHE_DIR` для сохранения модели между запусками. Первый запуск загружает модель (~13MB), последующие используют кэш.
+
+> 💡 **Примеры WATCH_PATHS**:
+> - Один путь: `WATCH_PATHS=/home/user/project`
+> - Несколько путей: `WATCH_PATHS=/home/user/project,/home/user/docs`
+> - JSON-массив: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
 
 ### 3. Готово!
 
@@ -142,34 +157,6 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 
 `qdrant_watch_ensure` объединяет текущий workspace с уже отслеживаемыми путями и `WATCH_PATHS`, поэтому безопасен для одного глобального MCP, который используется в нескольких проектах.
 
-Индексатор автоматически уважает `.gitignore` файлы, что значительно сокращает размер индекса за счёт исключения:
-- Зависимостей: `node_modules/`, `vendor/`, `.venv/`, `.pip cache/`
-- Артефактов сборки: `dist/`, `build/`, `*.class`, `*.o`, `*.so`
-- Сгенерированных файлов: `__pycache__/`, `*.pyc`, `*.pyo`, `.pytest_cache/`
-- Настроек IDE: `.idea/`, `.vscode/`, `*.swp`, `*.swo`
-- Файлов окружения: `.env`, `.env.local`, `*.log`
-
-## Конфигурация
-
-| Переменная окружения | По умолчанию | Описание |
-|---------------------|-------------|----------|
-| `QDRANT_URL` | `http://localhost:6333` | URL сервера Qdrant |
-| `QDRANT_API_KEY` | (нет) | API ключ Qdrant (опционально) |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Модель эмбеддингов |
-| `EMBEDDING_CACHE_DIR` | (системный tmp) | Кастомная директория для кэша модели |
-| `WATCH_PATHS` | `/data/repo` | Базовые пути, которые автоматически отслеживаются при старте сервера |
-| `BATCH_SIZE` | `50` | Размер пакета для индексации |
-| `DEBOUNCE_SECONDS` | `5` | Задержка debounce |
-| `LOG_LEVEL` | `INFO` | Уровень логирования |
-| `LOG_FORMAT` | `text` | Формат логов (`text` или `json`) |
-
-> 💡 **Кэш модели**: Установите `EMBEDDING_CACHE_DIR` для сохранения модели между запусками. Первый запуск загружает модель (~13MB), последующие используют кэш.
-
-> 💡 **Примеры WATCH_PATHS**:
-> - Один путь: `WATCH_PATHS=/home/user/project`
-> - Несколько путей: `WATCH_PATHS=/home/user/project,/home/user/docs`
-> - JSON-массив: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
-
 ## MCP Инструменты
 
 ### Поиск и индексация
@@ -195,7 +182,7 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 | `qdrant_get_collection_info` | Информация о коллекции |
 | `qdrant_delete_collection` | Удалить коллекцию |
 
-### Диагностика и интроспекция (НОВОЕ)
+### Диагностика и интроспекция
 
 | Инструмент | Описание |
 |------------|---------|
@@ -236,7 +223,7 @@ qdrant_diff_collection(collection="myproject", repo_path="/path/to/repo")
 ### Установка
 
 ```bash
-# Скопируйте skill в директорию OpenCode skills
+# скопируйте skill в директорию OpenCode skills
 cp -r skills/qmcp-manager ~/.config/opencode/skills/
 ```
 
@@ -246,7 +233,7 @@ cp -r skills/qmcp-manager ~/.config/opencode/skills/
 
 | Запрос | Что происходит |
 |--------|---------------|
-| `what's indexed in my Qdrant?` | Диагностирует коллекцию и показывает статистику |
+| `what's indexed in my Qdrant?` | Диагностирует коллекцию и показывает ст��тистику |
 | `show collection stats` | Список всех коллекций с количеством векторов |
 | `clean up orphans in my index` | Находит и показывает удаление осиротевших векторов |
 | `diagnose my index` | Полная диагностика с проблемами и списком файлов |
@@ -268,45 +255,7 @@ cp -r skills/qmcp-manager ~/.config/opencode/skills/
 skills/qmcp-manager/SKILL.md
 ```
 
-## Интеграция с OpenCode
-
-### Добавление MCP Server
-
-```bash
-opencode mcp add qmcp-qdrant qmcp-qdrant
-```
-
-Или отредактируйте `~/.config/opencode/opencode.json` напрямую (необходимо для переменных окружения):
-
-```json
-{
-  "mcp": {
-    "qmcp-qdrant": {
-      "type": "local",
-      "command": ["qmcp-qdrant"],
-      "environment": {
-        "QDRANT_URL": "http://192.168.218.190:6333",
-        "WATCH_PATHS": "/home/user/shared-docs,/home/user/shared-snippets"
-      }
-    }
-  }
-}
-```
-
-### Рекомендуемый workflow агента OpenCode
-
-Для **одного глобального MCP сервера, который разделяется между несколькими проектами**:
-
-1. Вызовите `qdrant_get_status()` при старте работы агента в workspace.
-2. Если `watcher_active == false` **или** `watched_paths` не содержит корень текущего workspace, вызовите:
-
-```python
-qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
-```
-
-Такой вызов сохраняет пути из конфигурации старта и уже отслеживаемые проекты, а не заменяет их.
-
-### Управление MCP Servers
+## Управление MCP Servers
 
 ```bash
 opencode mcp list          # Список всех MCP серверов
@@ -321,12 +270,12 @@ make install      # Установить зависимости
 make test         # Запустить тесты
 make lint         # Линтинг кода
 make format       # Форматирование кода
-make mcp-dev      # Запуск с MCP inspector
+mcp-dev      # Запуск с MCP inspector
 ```
 
 ## Решение проблем
 
-Если вы столкнулись с проблемами, см. [Руководство по решению проблем](./docs/TROUBLESHOOTING.md):
+Если вы столкнулись с проблемами, см. [Руководство по решению пробл��м](./docs/TROUBLESHOOTING.md):
 
 - **[Проблемы с моделью эмбеддингов](./docs/TROUBLESHOOTING.md#embedding-model-issues)** — диагностика и исправление `indexed_vectors_count: 0`
 - **[Проблемы с подключением](./docs/TROUBLESHOOTING.md#connection-problems)** — устранение проблем подключения к Qdrant

@@ -68,13 +68,28 @@ For Kubernetes deployment, see [Qdrant on Kubernetes](https://github.com/BigKAA/
 opencode mcp add qmcp-qdrant qmcp-qdrant
 ```
 
-> ⚠️ **Note**: Environment variables must be set in `~/.config/opencode/opencode.json` config file (see below).
+> ⚠️ **Note**: Environment variables must be set in `~/.config/opencode/opencode.json` config file.
 
-> 💡 **Global MCP, multiple projects**: `qmcp` now uses a two-level auto-indexing strategy.
-> The server automatically starts a watcher for configured `WATCH_PATHS`, and OpenCode/agents should ensure the current workspace is watched with `qdrant_watch_ensure(paths=[workspace_root])`.
+## Configuration
 
-> 💡 **WATCH_PATHS format**: `WATCH_PATHS` accepts a single absolute path, a comma-separated list of paths, or a JSON array string. For example:
-> `/home/user/project`, `/home/user/project,/home/user/docs`, or `["/home/user/project", "/home/user/docs"]`.
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
+| `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
+| `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
+| `WATCH_PATHS` | `/data/repo` | Baseline paths to watch automatically on server startup |
+| `BATCH_SIZE` | `50` | Batch size for indexing |
+| `DEBOUNCE_SECONDS` | `5` | Debounce delay |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
+
+> 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~13MB), subsequent launches use cached version.
+
+> 💡 **WATCH_PATHS examples**:
+> - Single path: `WATCH_PATHS=/home/user/project`
+> - Multiple paths: `WATCH_PATHS=/home/user/project,/home/user/docs`
+> - JSON array: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
 
 ### 3. That's It!
 
@@ -142,34 +157,6 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 
 `qdrant_watch_ensure` merges the current workspace with already watched paths and `WATCH_PATHS`, making it safe for a single global MCP shared by multiple projects.
 
-The indexer automatically respects `.gitignore` files, significantly reducing index size by excluding:
-- Dependencies: `node_modules/`, `vendor/`, `.venv/`, `.pip cache/`
-- Build artifacts: `dist/`, `build/`, `*.class`, `*.o`, `*.so`
-- Generated files: `__pycache__/`, `*.pyc`, `*.pyo`, `.pytest_cache/`
-- IDE settings: `.idea/`, `.vscode/`, `*.swp`, `*.swo`
-- Environment files: `.env`, `.env.local`, `*.log`
-
-## Configuration
-
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
-| `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
-| `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
-| `WATCH_PATHS` | `/data/repo` | Baseline paths to watch automatically on server startup |
-| `BATCH_SIZE` | `50` | Batch size for indexing |
-| `DEBOUNCE_SECONDS` | `5` | Debounce delay |
-| `LOG_LEVEL` | `INFO` | Logging level |
-| `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
-
-> 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~13MB), subsequent launches use cached version.
-
-> 💡 **WATCH_PATHS examples**:
-> - Single path: `WATCH_PATHS=/home/user/project`
-> - Multiple paths: `WATCH_PATHS=/home/user/project,/home/user/docs`
-> - JSON array: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
-
 ## MCP Tools
 
 ### Search & Indexing
@@ -195,7 +182,7 @@ The indexer automatically respects `.gitignore` files, significantly reducing in
 | `qdrant_get_collection_info` | Get collection info |
 | `qdrant_delete_collection` | Delete collection |
 
-### Diagnostics & Introspection (NEW)
+### Diagnostics & Introspection
 
 | Tool | Description |
 |------|-------------|
@@ -268,45 +255,7 @@ Once installed, OpenCode will automatically activate the skill when you ask ques
 skills/qmcp-manager/SKILL.md
 ```
 
-## OpenCode Integration
-
-### Add MCP Server
-
-```bash
-opencode mcp add qmcp-qdrant qmcp-qdrant
-```
-
-Or edit `~/.config/opencode/opencode.json` directly (required for environment variables):
-
-```json
-{
-  "mcp": {
-    "qmcp-qdrant": {
-      "type": "local",
-      "command": ["qmcp-qdrant"],
-      "environment": {
-        "QDRANT_URL": "http://192.168.218.190:6333",
-        "WATCH_PATHS": "/home/user/shared-docs,/home/user/shared-snippets"
-      }
-    }
-  }
-}
-```
-
-### Recommended OpenCode Agent Workflow
-
-For a **single global MCP server shared across multiple projects**:
-
-1. Call `qdrant_get_status()` when the agent starts working in a workspace.
-2. If `watcher_active` is `false` **or** `watched_paths` does not include the current workspace root, call:
-
-```python
-qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
-```
-
-This preserves configured startup paths and already watched projects instead of replacing them.
-
-### Manage MCP Servers
+## Manage MCP Servers
 
 ```bash
 opencode mcp list          # List all MCP servers
