@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -56,6 +56,9 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 
 > ⚠️ **Note**: Environment variables must be set in `~/.config/opencode/opencode.json` config file (see below).
 
+> 💡 **Global MCP, multiple projects**: `qmcp` now uses a two-level auto-indexing strategy.
+> The server automatically starts a watcher for configured `WATCH_PATHS`, and OpenCode/agents should ensure the current workspace is watched with `qdrant_watch_ensure(paths=[workspace_root])`.
+
 ### 3. That's It!
 
 OpenCode will automatically discover and use the semantic search tools.
@@ -71,7 +74,8 @@ If `opencode mcp add` doesn't work, edit `~/.config/opencode/opencode.json` dire
       "type": "local",
       "command": ["qmcp-qdrant"],
       "environment": {
-        "QDRANT_URL": "http://192.168.218.190:6333"
+        "QDRANT_URL": "http://192.168.218.190:6333",
+        "WATCH_PATHS": "/home/user/shared-docs,/home/user/shared-snippets"
       }
     }
   }
@@ -86,7 +90,8 @@ For Python module:
       "type": "local",
       "command": ["python", "-m", "qmcp.server"],
       "environment": {
-        "QDRANT_URL": "http://192.168.218.190:6333"
+        "QDRANT_URL": "http://192.168.218.190:6333",
+        "WATCH_PATHS": "/home/user/shared-docs,/home/user/shared-snippets"
       }
     }
   }
@@ -100,6 +105,25 @@ For Python module:
 For large codebases, prefer:
 - **Incremental reindex** (`mode="incremental"`) - only updates changed files based on content hashes
 - **File watcher** - enables automatic live updates when files change
+
+### Automatic Indexing Strategy
+
+`qmcp` supports automatic indexing on two levels:
+
+1. **Server startup level** — on MCP startup, the server automatically tries to start a watcher for `WATCH_PATHS`.
+2. **Workspace session level** — because one global MCP server can be shared across multiple repositories, agents should check the watcher state for the current workspace and call `qdrant_watch_ensure(paths=[workspace_root])` when the workspace path is missing.
+
+Recommended OpenCode flow for every new workspace:
+
+```python
+status = qdrant_get_status()
+
+# If watcher is not active or the current repo is not covered,
+# safely extend the watcher without dropping other projects.
+qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
+```
+
+`qdrant_watch_ensure` merges the current workspace with already watched paths and `WATCH_PATHS`, making it safe for a single global MCP shared by multiple projects.
 
 The indexer automatically respects `.gitignore` files, significantly reducing index size by excluding:
 - Dependencies: `node_modules/`, `vendor/`, `.venv/`, `.pip cache/`
@@ -116,7 +140,7 @@ The indexer automatically respects `.gitignore` files, significantly reducing in
 | `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
 | `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
-| `WATCH_PATHS` | `/data/repo` | Paths to watch |
+| `WATCH_PATHS` | `/data/repo` | Baseline paths to watch automatically on server startup |
 | `BATCH_SIZE` | `50` | Batch size for indexing |
 | `DEBOUNCE_SECONDS` | `5` | Debounce delay |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -163,6 +187,7 @@ The indexer automatically respects `.gitignore` files, significantly reducing in
 |------|-------------|
 | `qdrant_cleanup` | Clean stale vectors (dry-run supported) |
 | `qdrant_watch_start` | Start file watcher |
+| `qdrant_watch_ensure` | Ensure workspace path is watched without dropping other projects |
 | `qdrant_watch_stop` | Stop file watcher |
 | `qdrant_get_status` | Server status |
 
@@ -238,12 +263,26 @@ Or edit `~/.config/opencode/opencode.json` directly (required for environment va
       "type": "local",
       "command": ["qmcp-qdrant"],
       "environment": {
-        "QDRANT_URL": "http://192.168.218.190:6333"
+        "QDRANT_URL": "http://192.168.218.190:6333",
+        "WATCH_PATHS": "/home/user/shared-docs,/home/user/shared-snippets"
       }
     }
   }
 }
 ```
+
+### Recommended OpenCode Agent Workflow
+
+For a **single global MCP server shared across multiple projects**:
+
+1. Call `qdrant_get_status()` when the agent starts working in a workspace.
+2. If `watcher_active` is `false` **or** `watched_paths` does not include the current workspace root, call:
+
+```python
+qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
+```
+
+This preserves configured startup paths and already watched projects instead of replacing them.
 
 ### Manage MCP Servers
 

@@ -57,6 +57,20 @@ class WatchRequest(BaseModel):
     paths: list[str] = Field(..., description="Paths to watch for changes")
 
 
+class WatchEnsureRequest(BaseModel):
+    """Request model for idempotent watch operation."""
+
+    paths: list[str] = Field(..., description="Workspace paths that must be watched")
+    include_existing: bool = Field(
+        default=True,
+        description="Keep paths already watched by the running server",
+    )
+    include_configured: bool = Field(
+        default=True,
+        description="Keep paths configured through WATCH_PATHS",
+    )
+
+
 class CleanupRequest(BaseModel):
     """Request model for cleanup operation."""
 
@@ -103,6 +117,7 @@ class StatusResponse(BaseModel):
     collections: list[str]
     watcher_active: bool
     watched_paths: list[str]
+    configured_watch_paths: list[str]
 
 
 # ============================================================================

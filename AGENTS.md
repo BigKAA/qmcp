@@ -114,6 +114,16 @@ When implementing features that add or modify files in the project, ensure autom
 2. **Enable the file watcher** - Start the watcher with `qdrant_watch_start` or automatically on server start
 3. **Ensure incremental indexing** - New features should support incremental mode (`mode="incremental"`) to only update changed files
 
+For this project, one **global MCP server can be shared across multiple repositories**. Implement and use automatic indexing on two levels:
+
+- **Server level**: start watcher automatically for configured `WATCH_PATHS` during MCP startup
+- **Agent/session level**: when an agent starts working in a workspace, call `qdrant_get_status` and ensure the workspace root is covered; if not, call `qdrant_watch_ensure(paths=[workspace_root])`
+
+Important behavior for multi-project usage:
+- Do **not** replace already watched paths when enabling indexing for the current workspace
+- Prefer `qdrant_watch_ensure` over `qdrant_watch_start` for agent-driven workspace activation
+- Use `qdrant_watch_start` only when you intentionally want to replace the full watch set
+
 The indexer automatically respects `.gitignore` - ensure your implementation follows this pattern:
 - Exclude `node_modules/`, `vendor/`, `.venv/`, `__pycache__/`
 - Exclude build artifacts (`dist/`, `build/`, `*.class`, `*.o`)
@@ -161,7 +171,8 @@ Or edit `~/.config/opencode/opencode.json` directly (for environment variables):
       "type": "local",
       "command": ["uv", "run", "python", "-m", "qmcp.server"],
       "environment": {
-        "QDRANT_URL": "http://192.168.218.190:6333"
+        "QDRANT_URL": "http://192.168.218.190:6333",
+        "WATCH_PATHS": "/home/user/shared-docs,/home/user/shared-snippets"
       }
     }
   }
@@ -187,6 +198,7 @@ Once configured, OpenCode will have access to:
 - `qdrant_get_collection_info` - Collection details
 - `qdrant_delete_collection` - Delete collection
 - `qdrant_watch_start` - Start watcher
+- `qdrant_watch_ensure` - Ensure current workspace is watched without dropping others
 - `qdrant_watch_stop` - Stop watcher
 - `qdrant_cleanup` - Clean stale vectors
 - `qdrant_get_status` - Server status

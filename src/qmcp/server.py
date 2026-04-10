@@ -14,6 +14,9 @@
 
 """MCP Server for Qdrant - main entry point."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -33,9 +36,6 @@ init_logging()
 logger = get_logger(__name__)
 
 
-# Initialize FastMCP server
-mcp = FastMCP("Qdrant Vector Search", json_response=True)
-
 # Get settings
 settings = get_settings()
 
@@ -45,6 +45,187 @@ _indexer: Indexer | None = None
 _cleanup_manager: CleanupManager | None = None
 _watcher: AsyncWatcher | None = None
 _watch_paths: list[str] = settings.watch_paths
+
+
+def _normalize_watch_paths(paths: list[str]) -> list[str]:
+    """Normalize watch paths, remove duplicates, and preserve order.
+
+    Args:
+        paths: Raw watch paths provided by configuration or tool calls
+
+    Returns:
+        Normalized absolute paths with duplicates removed
+    """
+    normalized_paths: list[str] = []
+    seen_paths: set[str] = set()
+
+    for raw_path in paths:
+        if not raw_path:
+            continue
+
+        normalized_path = str(Path(raw_path).expanduser().resolve())
+        if normalized_path in seen_paths:
+            continue
+
+        normalized_paths.append(normalized_path)
+        seen_paths.add(normalized_path)
+
+    return normalized_paths
+
+
+def _split_existing_watch_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split requested watch paths into existing and missing paths.
+
+    Args:
+        paths: Normalized watch paths to validate
+
+    Returns:
+        Tuple of (existing_paths, missing_paths)
+    """
+    existing_paths: list[str] = []
+    missing_paths: list[str] = []
+
+    for path in _normalize_watch_paths(paths):
+        if Path(path).exists():
+            existing_paths.append(path)
+        else:
+            missing_paths.append(path)
+
+    return existing_paths, missing_paths
+
+
+async def _handle_watch_change(path: str, event_type: str) -> None:
+    """Handle a filesystem change event and trigger incremental indexing.
+
+    Args:
+        path: Changed filesystem path
+        event_type: Type of filesystem event
+    """
+    indexer = get_indexer()
+    extension = Path(path).suffix
+    collection = "docs" if extension == ".md" else "code"
+
+    logger.info("Processing watch event '%s' for %s", event_type, path)
+
+    indexer.index_directory(
+        path=str(Path(path).parent),
+        collection=collection,
+    )
+
+
+async def _stop_watcher() -> None:
+    """Stop the active watcher if it is running."""
+    global _watcher
+
+    if _watcher and _watcher.is_running:
+        await _watcher.stop()
+
+    _watcher = None
+
+
+async def _start_watcher(paths: list[str]) -> dict[str, Any]:
+    """Start watcher for the given set of paths.
+
+    Args:
+        paths: Paths that should be watched
+
+    Returns:
+        Status payload describing active and skipped paths
+    """
+    global _watcher, _watch_paths
+
+    valid_paths, skipped_paths = _split_existing_watch_paths(paths)
+
+    if not valid_paths:
+        await _stop_watcher()
+        _watch_paths = []
+
+        return {
+            "status": "skipped",
+            "watching": [],
+            "skipped_paths": skipped_paths,
+            "message": "No existing watch paths were provided.",
+        }
+
+    await _stop_watcher()
+
+    _watcher = AsyncWatcher(
+        valid_paths,
+        _handle_watch_change,
+        debounce_seconds=settings.debounce_seconds,
+    )
+    await _watcher.start()
+    _watch_paths = valid_paths
+
+    logger.info("Started watcher for %d path(s): %s", len(valid_paths), valid_paths)
+
+    return {
+        "status": "started",
+        "watching": valid_paths,
+        "skipped_paths": skipped_paths,
+    }
+
+
+async def _ensure_watcher_started(paths: list[str]) -> dict[str, Any]:
+    """Ensure watcher is running for the provided paths.
+
+    Args:
+        paths: Target watch paths after normalization
+
+    Returns:
+        Status payload describing whether watcher was started, restarted, or reused
+    """
+    global _watcher
+
+    normalized_paths = _normalize_watch_paths(paths)
+    valid_paths, skipped_paths = _split_existing_watch_paths(normalized_paths)
+    watcher_was_running = _watcher is not None and _watcher.is_running
+
+    if _watcher and _watcher.is_running and _watch_paths == valid_paths:
+        return {
+            "status": "already_running",
+            "watching": valid_paths,
+            "skipped_paths": skipped_paths,
+        }
+
+    result = await _start_watcher(normalized_paths)
+    if result["status"] == "started" and watcher_was_running:
+        result["status"] = "restarted"
+
+    return result
+
+
+@asynccontextmanager
+async def app_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    """Manage watcher lifecycle for server startup and shutdown.
+
+    On startup the server attempts to enable automatic indexing for configured
+    WATCH_PATHS. This is best-effort so the MCP server can still start even if
+    no valid filesystem paths are configured.
+    """
+    configured_paths = _normalize_watch_paths(settings.watch_paths)
+
+    try:
+        startup_result = await _ensure_watcher_started(configured_paths)
+        if startup_result["status"] == "skipped":
+            logger.warning(
+                "Automatic indexing was not enabled on startup. Invalid watch paths: %s",
+                startup_result.get("skipped_paths", []),
+            )
+    except Exception as exc:
+        logger.exception("Failed to start watcher during MCP startup: %s", exc)
+
+    try:
+        yield {}
+    finally:
+        try:
+            await _stop_watcher()
+        except Exception as exc:
+            logger.exception("Failed to stop watcher during MCP shutdown: %s", exc)
+
+
+# Initialize FastMCP server
+mcp = FastMCP("Qdrant Vector Search", json_response=True, lifespan=app_lifespan)
 
 
 def get_qdrant_client() -> QdrantClientWrapper:
@@ -231,37 +412,41 @@ async def qdrant_watch_start(
 
     This enables live updates - files are reindexed when modified.
     """
-    global _watcher, _watch_paths
+    try:
+        return await _start_watcher(paths)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def qdrant_watch_ensure(
+    paths: list[str] = Field(..., description="Workspace paths that must be watched"),
+    include_existing: bool = Field(
+        default=True,
+        description="Keep paths that are already being watched by the running server",
+    ),
+    include_configured: bool = Field(
+        default=True,
+        description="Keep paths configured through WATCH_PATHS on server startup",
+    ),
+) -> dict[str, Any]:
+    """Ensure watcher is active for the current workspace without dropping other projects.
+
+    This tool is designed for OpenCode sessions where one global MCP server is
+    shared across multiple repositories. It merges workspace paths with the
+    configured and/or currently watched paths and only restarts the watcher when
+    the effective watch set changes.
+    """
+    requested_paths: list[str] = []
+
+    if include_configured:
+        requested_paths.extend(settings.watch_paths)
+    if include_existing:
+        requested_paths.extend(_watch_paths)
+    requested_paths.extend(paths)
 
     try:
-        # Stop existing watcher
-        if _watcher and _watcher.is_running:
-            await _watcher.stop()
-
-        # Create new watcher
-        async def on_change(path: str, event_type: str):
-            indexer = get_indexer()
-            # Determine collection based on file extension
-            from pathlib import Path
-
-            ext = Path(path).suffix
-            collection = "docs" if ext == ".md" else "code"
-
-            # Reindex the file
-            indexer.index_directory(
-                path=str(Path(path).parent),
-                collection=collection,
-            )
-
-        _watcher = AsyncWatcher(paths, on_change, debounce_seconds=settings.debounce_seconds)
-        await _watcher.start()
-
-        _watch_paths = paths
-
-        return {
-            "status": "started",
-            "watching": paths,
-        }
+        return await _ensure_watcher_started(requested_paths)
     except Exception as e:
         return {"error": str(e)}
 
@@ -269,12 +454,11 @@ async def qdrant_watch_start(
 @mcp.tool()
 async def qdrant_watch_stop() -> dict[str, str]:
     """Stop watching paths for file changes."""
-    global _watcher
+    global _watch_paths
 
     try:
-        if _watcher and _watcher.is_running:
-            await _watcher.stop()
-            _watcher = None
+        await _stop_watcher()
+        _watch_paths = []
 
         return {"status": "stopped"}
     except Exception as e:
@@ -318,6 +502,7 @@ async def qdrant_get_status() -> dict[str, Any]:
             "collections": collections,
             "watcher_active": _watcher.is_running if _watcher else False,
             "watched_paths": _watch_paths,
+            "configured_watch_paths": _normalize_watch_paths(settings.watch_paths),
         }
     except QdrantConnectionError:
         return {
@@ -327,6 +512,7 @@ async def qdrant_get_status() -> dict[str, Any]:
             "collections": [],
             "watcher_active": False,
             "watched_paths": [],
+            "configured_watch_paths": _normalize_watch_paths(settings.watch_paths),
         }
     except Exception as e:
         return {

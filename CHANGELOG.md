@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-04-10
+
+### Added
+- Automatic watcher startup from configured `WATCH_PATHS` during MCP server startup
+- New `qdrant_watch_ensure` tool to ensure workspace coverage without dropping already watched projects
+- Extended status payload with `configured_watch_paths` for workspace-level watcher checks
+
+### Changed
+- Updated OpenCode and agent documentation for the two-level automatic indexing workflow used by a single global MCP server shared across multiple repositories
+- Improved watcher path normalization and reuse logic for multi-project environments
+
+### Fixed
+- Automatic indexing now activates correctly for OpenCode sessions that need to verify and extend watcher coverage for the current workspace
+- Synchronized package and runtime version metadata for the new release
+
+### Security
+- N/A
+
 ## [0.2.1] - 2026-04-09
 
 ### Added

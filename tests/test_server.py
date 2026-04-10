@@ -14,14 +14,17 @@
 
 """Tests for MCP server."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+import qmcp.server as server_module
 from qmcp.server import (
+    app_lifespan,
     qdrant_get_status,
     qdrant_list_collections,
     qdrant_search,
+    qdrant_watch_ensure,
 )
 
 
@@ -76,3 +79,42 @@ class TestMcpServer:
 
             assert result["status"] == "healthy"
             assert result["qdrant_connected"] is True
+            assert "configured_watch_paths" in result
+
+    @pytest.mark.asyncio
+    async def test_watch_ensure_merges_configured_and_workspace_paths(self, tmp_path):
+        """Test watch ensure preserves configured paths for global MCP usage."""
+        configured_path = tmp_path / "configured"
+        workspace_path = tmp_path / "workspace"
+        configured_path.mkdir()
+        workspace_path.mkdir()
+
+        mock_watcher = Mock()
+        mock_watcher.start = AsyncMock()
+        mock_watcher.stop = AsyncMock()
+        mock_watcher.is_running = True
+
+        with patch.object(server_module.settings, "watch_paths", [str(configured_path)]):
+            with patch("qmcp.server.AsyncWatcher", return_value=mock_watcher):
+                with patch("qmcp.server._watcher", None):
+                    with patch("qmcp.server._watch_paths", []):
+                        result = await qdrant_watch_ensure(paths=[str(workspace_path)])
+
+        expected_paths = [str(configured_path.resolve()), str(workspace_path.resolve())]
+
+        assert result["status"] == "started"
+        assert result["watching"] == expected_paths
+        assert result["skipped_paths"] == []
+
+    @pytest.mark.asyncio
+    async def test_app_lifespan_starts_and_stops_watcher(self):
+        """Test watcher lifecycle is managed during MCP startup and shutdown."""
+        with patch(
+            "qmcp.server._ensure_watcher_started", new=AsyncMock(return_value={"status": "started"})
+        ) as mock_ensure:
+            with patch("qmcp.server._stop_watcher", new=AsyncMock()) as mock_stop:
+                async with app_lifespan(Mock()):
+                    pass
+
+        mock_ensure.assert_awaited_once()
+        mock_stop.assert_awaited_once()

@@ -20,7 +20,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from qmcp.diagnostics import DiagnosticsManager, FileInfo
+from qmcp.diagnostics import DiagnosticsManager
 
 
 class TestDiagnosticsManager:
@@ -324,7 +324,7 @@ class TestDiagnosticsManager:
         """Test diff_collection detects missing files."""
         # Indexed file exists
         main_py = temp_repo / "main.py"
-        hash_value = diagnostics_manager._compute_hash(main_py)
+        diagnostics_manager._compute_hash(main_py)
 
         # But collection is empty
         mock_qdrant_client.get_all_points.return_value = []
