@@ -8,9 +8,11 @@ description: |
   - Reindexing or updating the search index
   - Comparing Qdrant state with filesystem
   - Diagnosing collection issues or getting collection statistics
-  
+  - Choosing embedding model for collection type (code, docs, multilingual KB)
+   
   Examples: "what's indexed in my Qdrant", "clean up orphans", "show collection stats", 
-  "find missing files", "diagnose my index", "compare index with repo"
+  "find missing files", "diagnose my index", "compare index with repo",
+  "which model should I use for code", "set up corporate knowledge base"
 ---
 
 # QDrant MCP Manager Skill
@@ -21,22 +23,32 @@ This skill manages the qmcp (QDrant MCP Server) - a semantic search server for c
 
 ## Available MCP Tools
 
-### Diagnostics Tools (NEW)
+### Search & Indexing
+| Tool | Purpose |
+|------|---------|
+| `qdrant_search` | Semantic search in collection |
+| `qdrant_search_many` | Search across multiple collections |
+| `qdrant_index_directory` | Index directory with optional model selection |
+| `qdrant_reindex` | Full or incremental reindex with optional model change |
+| `qdrant_list_supported_models` | List available embedding models |
+
+### Diagnostics Tools
 | Tool | Purpose |
 |------|---------|
 | `qdrant_diagnose_collection` | Full collection diagnostics - vectors, files, types, issues |
 | `qdrant_list_indexed_files` | Paginated list of indexed files with metadata |
 | `qdrant_diff_collection` | Compare Qdrant state with filesystem (orphans, missing, modified) |
 
-### Existing Tools
+### Collection Management
 | Tool | Purpose |
 |------|---------|
-| `qdrant_search` | Semantic search in collection |
-| `qdrant_index_directory` | Index directory into collection |
-| `qdrant_reindex` | Full or incremental reindex |
 | `qdrant_list_collections` | List all collections |
-| `qdrant_get_collection_info` | Get collection metadata |
+| `qdrant_get_collection_info` | Get collection metadata (includes embedding_model) |
 | `qdrant_delete_collection` | Delete a collection |
+
+### Maintenance
+| Tool | Purpose |
+|------|---------|
 | `qdrant_cleanup` | Clean stale vectors (dry-run supported) |
 | `qdrant_watch_start/stop` | Start/stop file watching |
 | `qdrant_get_status` | Server status |
@@ -120,6 +132,125 @@ Default collections:
 
 For project isolation, use project-specific names like `myproject-code`, `myproject-docs`.
 
+## Model Selection
+
+qmcp supports per-collection embedding model selection. Use `qdrant_list_supported_models()` to see available models.
+
+### Recommended Models by Use Case
+
+| Use Case | Model | Dimension | When to Use |
+|---------|-------|-----------|-------------|
+| **Code search** | `jinaai/jina-embeddings-v2-base-code` | 768 | Best for code, 30+ programming languages |
+| **English docs (lightweight)** | `BAAI/bge-small-en-v1.5` | 384 | Fast, small, good for small projects |
+| **English docs (quality)** | `BAAI/bge-large-en-v1.5` | 1024 | Best quality, larger model |
+| **Multilingual KB (RU+EN)** | `intfloat/multilingual-e5-large` | 1024 | Best for corporate knowledge base |
+| **Multilingual (lightweight)** | `paraphrase-multilingual-MiniLM-L12-v2` | 384 | Compromise option |
+
+### E5 Model Prefix Handling
+
+> **Important**: The `intfloat/multilingual-e5-large` model requires special prefixes (`query: ` and `passage: `) for optimal retrieval. **This is handled automatically by qmcp** — no action needed!
+
+When using E5 model:
+- Queries are automatically prefixed with `query: `
+- Content is automatically prefixed with `passage: ` during indexing
+
+### Selection Decision Workflow
+
+```
+When user asks "which model should I use?" or "what model for [use case]?":
+1. Ask about the use case or detect from context:
+   - Code search → jinaai/jina-embeddings-v2-base-code
+   - Multilingual (RU+EN) docs → intfloat/multilingual-e5-large
+   - Small English project → BAAI/bge-small-en-v1.5
+   - Best English quality → BAAI/bge-large-en-v1.5
+2. Use qdrant_list_supported_models() to confirm
+3. Present recommendation with explanation
+```
+
+### Verify Model in Collection
+
+Use `qdrant_get_collection_info()` to see which model a collection uses:
+```
+qdrant_get_collection_info(collection="my-collection")
+# Returns: { ..., "embedding_model": "jinaai/jina-embeddings-v2-base-code" }
+```
+
+### Change Collection Model
+
+To change a collection's model, reindex with the new model:
+```
+qdrant_reindex(path="/path/to/reindex", collection="my-collection", model="new-model", mode="full")
+```
+
+## Corporate Knowledge Base Architecture
+
+qmcp supports multi-collection architecture for corporate knowledge bases.
+
+### Collection Patterns
+
+| Pattern | Purpose | Recommended Model |
+|---------|---------|-------------------|
+| `company-kb-docs` | Corporate docs, policies, wiki | `intfloat/multilingual-e5-large` |
+| `company-kb-snippets` | Shared code templates | `jinaai/jina-embeddings-v2-base-code` |
+| `team-{name}-docs` | Team documentation | `BAAI/bge-small-en-v1.5` |
+| `team-{name}-code` | Team shared code | `jinaai/jina-embeddings-v2-base-code` |
+| `project-{name}-code` | Project code | `jinaai/jina-embeddings-v2-base-code` |
+| `project-{name}-docs` | Project docs | `BAAI/bge-small-en-v1.5` |
+
+### Workflow: Set Up Corporate KB
+
+```
+When user asks "set up corporate knowledge base" or "create team collection":
+1. Ask about:
+   - Scope: company-wide, team, or project?
+   - Content type: docs, code, or both?
+   - Languages: English only or multilingual?
+2. Recommend model based on scope:
+   - Corporate/multilingual → intfloat/multilingual-e5-large
+   - Code → jinaai/jina-embeddings-v2-base-code
+   - Small English → BAAI/bge-small-en-v1.5
+3. Create collection with model:
+   qdrant_index_directory(
+       path="/path/to/content",
+       collection="company-kb-docs",
+       model="intfloat/multilingual-e5-large"
+   )
+4. Optional: Add metadata for organization:
+   qdrant_index_directory(
+       path="/path/to/docs",
+       collection="company-kb-docs",
+       model="intfloat/multilingual-e5-large",
+       metadata={"team": "docs-team", "visibility": "internal"}
+   )
+```
+
+### Search Across Collections
+
+For corporate KB, use `qdrant_search_many` to search across all collections:
+```
+qdrant_search_many(
+    collections=["company-kb-docs", "company-kb-snippets", "team-backend-code"],
+    query="How to authenticate",
+    limit=10
+)
+```
+
+### Metadata Enrichment
+
+Add custom metadata for filtering and organization:
+```
+qdrant_index_directory(
+    path="/project/docs",
+    collection="project-docs",
+    model="BAAI/bge-small-en-v1.5",
+    metadata={
+        "team": "backend",
+        "project": "api-gateway",
+        "visibility": "internal"
+    }
+)
+```
+
 ## Input Parameters
 
 ### qdrant_diagnose_collection
@@ -184,8 +315,13 @@ For project isolation, use project-specific names like `myproject-code`, `myproj
 | "Clean up" | qdrant_cleanup (dry-run first) |
 | "Reindex" | qdrant_reindex (incremental) |
 | "Search code" | qdrant_search |
+| "Search across collections" | qdrant_search_many |
 | "Index new files" | qdrant_index_directory |
+| "Which model?" / "what model for code?" | Check use case → recommend model |
+| "Set up corporate KB" / "create team collection" | Corporate KB workflow |
 | "Search not working" / "null scores" | Check indexed_vectors_count |
+| "Show available models" | qdrant_list_supported_models |
+| "Which model does collection use?" | qdrant_get_collection_info → embedding_model field |
 
 ## Common Issues
 
@@ -251,4 +387,33 @@ Assistant: Let me compare your index with the filesystem.
   - 3 missing files (need indexing)
   - 2 modified files (need reindex)
 - Recommends actions
+```
+
+### Example 4: User asks "which model should I use for code search?"
+```
+Assistant: For code search, I recommend using the jinaai/jina-embeddings-v2-base-code model.
+- Best for code semantics (30+ languages)
+- 768 dimensions
+- No prefix handling needed
+- Use: model="jinaai/jina-embeddings-v2-base-code" in qdrant_index_directory
+```
+
+### Example 5: User asks "set up corporate knowledge base"
+```
+Assistant: I'll help you set up a corporate KB. Let me ask a few questions:
+1. Scope: company-wide or team-specific?
+2. Content: docs, code, or both?
+3. Languages: English only or multilingual (RU+EN)?
+
+User: company-wide docs, multilingual (RU+EN)
+Assistant: For multilingual corporate docs, I'll recommend intfloat/multilingual-e5-large:
+- Best for 100+ languages
+- Handles both Russian and English
+- Requires "query:" and "passage:" prefixes (handled automatically)
+
+qdrant_index_directory(
+    path="/shared/corporate-docs",
+    collection="company-kb-docs",
+    model="intfloat/multilingual-e5-large"
+)
 ```
