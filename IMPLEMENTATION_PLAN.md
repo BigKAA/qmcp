@@ -14,15 +14,15 @@ This plan covers two major features:
 
 ## Quick Ref: Recommended Models
 
-| Use Case | Model | Dim | Size | Notes |
-|----------|-------|-----|------|-------|
-| Code search | `jinaai/jina-embeddings-v2-base-code` | 768 | 0.64 GB | Best for code, 30+ programming languages |
-| English docs (lightweight) | `BAAI/bge-small-en-v1.5` | 384 | 0.07 GB | Default, fast, small |
-| English docs (quality) | `BAAI/bge-large-en-v1.5` | 1024 | 1.2 GB | Best quality for English |
-| Multilingual KB (RU+EN) | `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | Best for corporate KB, 100 languages |
-| Multilingual KB (lightweight) | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | 0.22 GB | Compromise option |
+| Use Case | Model | Dim | Size | Prefix | Notes |
+|----------|-------|-----|------|--------|-------|
+| Code search | `jinaai/jina-embeddings-v2-base-code` | 768 | 0.64 GB | No | Best for code, 30+ programming languages |
+| English docs (lightweight) | `BAAI/bge-small-en-v1.5` | 384 | 0.07 GB | No | Default, fast, small |
+| English docs (quality) | `BAAI/bge-large-en-v1.5` | 1024 | 1.2 GB | No | Best quality for English |
+| Multilingual KB (RU+EN) | `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | **Yes** | Best for corporate KB, 100 languages |
+| Multilingual KB (lightweight) | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | 0.22 GB | No | Compromise option |
 
-**Important**: `intfloat/multilingual-e5-large` requires `query:` / `passage:` prefixes for optimal quality. The codebase currently does NOT add these prefixes. If using this model, the `client.py` `query_embed` and `passage_embed` calls must be updated to prepend appropriate prefixes.
+**⚠️ E5 Prefix Requirement**: `intfloat/multilingual-e5-large` and other `e5-*` models **require** `query: ` / `passage: ` prefixes. This is handled **automatically** in Phase 2.5 — no manual action needed. See Phase 2.5 for implementation details.
 
 ---
 
@@ -109,6 +109,29 @@ This plan covers two major features:
 - [ ] Add `get_embedding_model_for_collection(collection_name)` helper that reads metadata and returns model name
 - [ ] Test: load two different models sequentially → both should be cached and usable
 
+### 2.5 — E5 Model Prefix Handling
+
+**Files**: `src/qmcp/client.py`, `src/qmcp/models.py`, `tests/test_client.py`
+
+**Background**: `intfloat/multilingual-e5-large` and related `e5-*` models require input prefixes:
+- Queries must be prefixed with `query: ` (with trailing space)
+- Passages must be prefixed with `passage: ` (with trailing space)
+
+Without these prefixes the model produces significantly worse retrieval results. This behavior is automatic and model-specific — it activates only when the collection's `embedding_model` contains `e5`.
+
+**Implementation**:
+
+- [ ] Define constant `E5_PREFIX_QUERY = "query: "` and `E5_PREFIX_PASSAGE = "passage: "`
+- [ ] Add helper `is_e5_model(model_name: str) -> bool` that checks if model name contains `e5` (case-insensitive)
+- [ ] In `search()` method: if `is_e5_model(collection_model)`, prepend `query: ` prefix to query before `query_embed()`
+- [ ] In `upsert()` method: if `is_e5_model(collection_model)`, prepend `passage: ` prefix to all contents before `passage_embed()`
+- [ ] In `_get_file_points()` in `indexer.py`: ensure the prefix logic flows through correctly during batch indexing
+- [ ] Add unit test: with `multilingual-e5-large` model → query gets `query: ` prefix applied
+- [ ] Add unit test: with non-E5 model (e.g., `BAAI/bge-small-en-v1.5`) → no prefix applied
+- [ ] Add integration test: index with E5 model, search → results have expected quality (can verify by searching known phrase)
+
+**Important**: The prefix is added **before** embedding, not stored in payload. Search results still return the original text without prefix (only the vector uses the prefixed version).
+
 ---
 
 ## Phase 3: Corporate Knowledge Base Architecture
@@ -149,6 +172,7 @@ This plan covers two major features:
   - Lightweight docs collection with `BAAI/bge-small-en-v1.5`
 - [ ] Include exact commands for `qdrant_index_directory` with correct `model=` values
 - [ ] Include commands for setting up watcher with `qdrant_watch_ensure`
+- [ ] Document that E5 prefix handling (`query:` / `passage:`) is **automatic** — no user action required
 
 ### 3.4 — Metadata enrichment for KB collections
 
@@ -175,12 +199,15 @@ This plan covers two major features:
 
 ### 4.2 — Integration tests for model compatibility
 
-**Files**: `tests/test_server.py`, `tests/test_indexer.py`
+**Files**: `tests/test_server.py`, `tests/test_indexer.py`, `tests/test_client.py`
 
 - [ ] Test: index collection with model A, search → works correctly
 - [ ] Test: index collection with model A, search with model B → returns clear error about mismatch
 - [ ] Test: full reindex with new model → collection metadata updated, old vectors replaced
 - [ ] Test: incremental reindex with new model → collection metadata updated, only changed files reindexed
+- [ ] Test (E5 prefix): index with `multilingual-e5-large` → verify `passage: ` prefix was added to content during embedding
+- [ ] Test (E5 prefix): search with `multilingual-e5-large` → verify `query: ` prefix was added to query during embedding
+- [ ] Test (E5 prefix): index with non-E5 model → verify no prefix was added
 
 ### 4.3 — Unit tests for `qdrant_search_many`
 
@@ -213,12 +240,13 @@ This plan covers two major features:
 
 **Files**: `README.md`
 
-- [ ] Add section "Choosing an Embedding Model" with model comparison table
+- [ ] Add section "Choosing an Embedding Model" with model comparison table (include Prefix column)
 - [ ] Add section "Corporate Knowledge Base" with architecture diagram
 - [ ] Add `qdrant_list_supported_models` to MCP Tools table
 - [ ] Add `qdrant_search_many` to MCP Tools table
 - [ ] Update Configuration table with model selection notes
 - [ ] Add "Model Per Collection" section explaining metadata storage
+- [ ] Add note that E5 prefix handling (`query:` / `passage:`) is **automatic** — no user action needed
 
 ### 5.2 — Update ARCHITECTURE.md
 
@@ -272,7 +300,7 @@ This plan covers two major features:
 3. **Test after each phase** (Phase 4 tests are split per phase intentionally) — do not skip testing
 4. **Read related code before editing** — use `serena_get_symbols_overview` on the file you plan to modify
 5. **If model mismatch error occurs** — this is expected behavior, not a bug. Document it clearly in user-facing messages.
-6. **For `intfloat/multilingual-e5-large`** — remember it requires `query:` prefix on search queries. Current implementation does NOT add this. Consider whether to add prefix handling in `client.py` `search()` method for this specific model, or document it as a known limitation.
+6. **For `intfloat/multilingual-e5-large`** — E5 prefix handling is implemented in **Phase 2.5**. Queries and passages are automatically prefixed with `query: ` and `passage: ` respectively when the collection uses an E5 model. This is transparent to users — no action needed.
 7. **Collection metadata** in Qdrant is stored via `collection_info` or custom payload. Verify which Qdrant API is available in the current `qdrant-client` version before implementing.
 
 ---
@@ -283,7 +311,7 @@ This plan covers two major features:
 |------|---------|
 | `src/qmcp/config.py` | No changes (model comes from settings or per-call) |
 | `src/qmcp/models.py` | Add `SupportedModel`, update `IndexRequest`, `ReindexRequest`, `SearchManyRequest`, add `CollectionMetadata` model |
-| `src/qmcp/client.py` | Add model cache dict, `_load_embedding_model(model_name)`, metadata read/write, model validation |
+| `src/qmcp/client.py` | Add model cache dict, `_load_embedding_model(model_name)`, metadata read/write, model validation, E5 prefix handling (`query:` / `passage:`) |
 | `src/qmcp/indexer.py` | Accept `model` parameter, pass to client |
 | `src/qmcp/server.py` | Add `qdrant_list_supported_models`, `qdrant_search_many`, update `qdrant_index_directory`, `qdrant_reindex`, add model to tools |
 | `tests/test_server.py` | Add tests for new tools |
