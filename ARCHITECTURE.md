@@ -127,6 +127,119 @@ DiagnosticsManager
 └── diff_collection()         → Qdrant ↔ filesystem comparison
 ```
 
+## Model Selection Architecture
+
+qmcp supports per-collection embedding model selection with automatic model caching and E5 prefix handling.
+
+### Model Selection Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      Indexing with Model Selection                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+File System
+     │
+     ▼
+┌─────────────┐
+│   Parser    │ ──→ Extract code chunks
+└──────┬──────┘
+       │
+       ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│                      Model Selection                                    │
+│                                                                        │
+│  ┌─────────────────┐     ┌─────────────────────┐                      │
+│  │ model parameter │ ──► │ Check model cache   │                      │
+│  │ (or default)    │     │ (_embedding_model_cache)                     │
+│  └─────────────────┘     └──────────┬──────────┘                      │
+│                                     │                                   │
+│                    ┌────────────────┴────────────────┐                │
+│                    ▼                                 ▼                │
+│           ┌─────────────────┐             ┌─────────────────┐        │
+│           │   Model cached  │             │ Load model from │        │
+│           │   (cache hit)   │             │ HuggingFace     │        │
+│           └─────────────────┘             └─────────────────┘        │
+└───────────────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│                      E5 Prefix Handling (if E5 model)                  │
+│                                                                        │
+│  E5 models require special prefixes for optimal retrieval:             │
+│  - Queries: "query: " prefix (e.g., "query: How do I auth?")          │
+│  - Passages: "passage: " prefix (e.g., "passage: To authenticate...") │
+│                                                                        │
+│  This is handled AUTOMATICALLY — no user action needed!               │
+└───────────────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────┐
+│   Qdrant    │ ──→ Upsert vectors
+│   Client    │
+└─────────────┘
+```
+
+### Model Metadata Storage
+
+Each collection stores its embedding model in Qdrant collection metadata:
+
+```
+Collection: "my-project-code"
+├── Vectors: 768 dimensions (for jina-code model)
+├── Metadata: { "embedding_model": "jinaai/jina-embeddings-v2-base-code" }
+└── Points: [ ... ]
+
+Collection: "corporate-kb"
+├── Vectors: 1024 dimensions (for multilingual-e5-large)
+├── Metadata: { "embedding_model": "intfloat/multilingual-e5-large" }
+└── Points: [ ... ]
+```
+
+### Supported Models
+
+| Model | Dimension | Use Case | Prefix Required |
+|-------|-----------|----------|-----------------|
+| `jinaai/jina-embeddings-v2-base-code` | 768 | Code search | No |
+| `BAAI/bge-small-en-v1.5` | 384 | Lightweight docs | No |
+| `BAAI/bge-large-en-v1.5` | 1024 | Quality English docs | No |
+| `intfloat/multilingual-e5-large` | 1024 | Multilingual KB | **Yes** |
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | Lightweight multilingual | No |
+
+### Corporate KB Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      Corporate Knowledge Base                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           Qdrant Collections                              │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐      │
+│  │  company-kb-docs │  │company-kb-snippets│  │  team-api-docs  │      │
+│  │  multilingual-e5 │  │   jina-code      │  │   bge-small     │      │
+│  │  (1024 dim)      │  │    (768 dim)     │  │    (384 dim)    │      │
+│  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘      │
+│           │                      │                      │                │
+│           └──────────────────────┼──────────────────────┘                │
+│                                  │                                       │
+│                                  ▼                                       │
+│                    ┌─────────────────────────────┐                       │
+│                    │    qdrant_search_many()     │                       │
+│                    │  (searches all collections)│                       │
+│                    └─────────────────────────────┘                       │
+│                                  │                                       │
+└──────────────────────────────────┼──────────────────────────────────────┘
+                                   │
+                                   ▼
+                    ┌─────────────────────────────┐
+                    │   Merged & Sorted Results   │
+                    │   (by score descending)     │
+                    └─────────────────────────────┘
+```
+
 ## OpenCode Skill
 
 The `qmcp-manager` skill provides natural language interface for Qdrant management:

@@ -14,10 +14,9 @@
 
 """Configuration management using Pydantic Settings."""
 
+import json
 from functools import lru_cache
 from typing import Annotated, Literal
-
-import json
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict

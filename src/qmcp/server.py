@@ -29,6 +29,7 @@ from .config import get_settings
 from .diagnostics import DiagnosticsManager
 from .indexer import Indexer
 from .logging_config import get_logger, init_logging
+from .models import SupportedModel
 from .watcher import AsyncWatcher
 
 # Initialize logging
@@ -38,6 +39,55 @@ logger = get_logger(__name__)
 
 # Get settings
 settings = get_settings()
+
+# Supported embedding models with metadata
+SUPPORTED_MODELS: list[SupportedModel] = [
+    SupportedModel(
+        model="jinaai/jina-embeddings-v2-base-code",
+        dim=768,
+        size_in_gb=0.64,
+        languages="Multilingual (30+ programming languages)",
+        use_case="code search",
+        notes="Best for code search, supports 30+ programming languages",
+        has_prefix=False,
+    ),
+    SupportedModel(
+        model="BAAI/bge-small-en-v1.5",
+        dim=384,
+        size_in_gb=0.07,
+        languages="English",
+        use_case="documentation",
+        notes="Lightweight, fast, good default for English documentation",
+        has_prefix=False,
+    ),
+    SupportedModel(
+        model="BAAI/bge-large-en-v1.5",
+        dim=1024,
+        size_in_gb=1.2,
+        languages="English",
+        use_case="documentation",
+        notes="Best quality for English documentation",
+        has_prefix=False,
+    ),
+    SupportedModel(
+        model="intfloat/multilingual-e5-large",
+        dim=1024,
+        size_in_gb=2.24,
+        languages="Multilingual (100+)",
+        use_case="multilingual KB",
+        notes="Best for corporate KB with RU+EN content. Requires 'query:' / 'passage:' prefixes (automatic)",
+        has_prefix=True,
+    ),
+    SupportedModel(
+        model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        dim=384,
+        size_in_gb=0.22,
+        languages="Multilingual (50+)",
+        use_case="multilingual KB",
+        notes="Lightweight multilingual option, good compromise",
+        has_prefix=False,
+    ),
+]
 
 # Global state
 _qdrant_client: QdrantClientWrapper | None = None
@@ -317,6 +367,82 @@ async def qdrant_search(
 
 
 @mcp.tool()
+async def qdrant_search_many(
+    collections: list[str] = Field(
+        ...,
+        description="List of collection names to search across",
+    ),
+    query: str = Field(..., description="Search query text"),
+    limit: int = Field(default=10, ge=1, le=100, description="Maximum results per collection"),
+    score_threshold: float = Field(
+        default=0.7, ge=0.0, le=1.0, description="Minimum score threshold"
+    ),
+) -> list[dict[str, Any]]:
+    """Search across multiple collections and merge results.
+
+    This tool is useful for corporate knowledge bases where information
+    is spread across multiple collections (e.g., team-docs, company-kb, project-code).
+
+    Results are sorted by score descending across all collections.
+    Each result includes a 'collection' field indicating its source.
+    """
+    try:
+        client = get_qdrant_client()
+        results = client.search_many(
+            collections=collections,
+            query=query,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+        return results
+    except QdrantConnectionError as e:
+        return [{"error": str(e)}]
+
+
+@mcp.tool()
+async def qdrant_list_supported_models(
+    filter: str | None = Field(
+        default=None,
+        description="Filter models: 'code', 'multilingual', 'lightweight', or 'all' (default: all)",
+    ),
+) -> list[dict[str, Any]]:
+    """List supported embedding models with their metadata.
+
+    Returns a list of recommended embedding models for different use cases:
+    - code: Models optimized for code search
+    - multilingual: Models supporting multiple languages including RU+EN
+    - lightweight: Smaller, faster models for quick indexing
+    - all: All available models
+
+    Each model includes:
+    - model: Full model name (use this for model= parameter)
+    - dim: Embedding dimension
+    - size_in_GB: Model size in GB
+    - languages: Supported languages
+    - use_case: Primary use case
+    - notes: Additional notes
+    - has_prefix: Whether 'query:'/'passage:' prefixes are required (E5 models)
+    """
+    if filter is None or filter == "all":
+        return [m.model_dump() for m in SUPPORTED_MODELS]
+
+    filter_lower = filter.lower()
+    filtered_models = []
+
+    for model in SUPPORTED_MODELS:
+        if filter_lower == "code" and model.use_case == "code search":
+            filtered_models.append(model)
+        elif filter_lower == "multilingual" and "multilingual" in model.use_case.lower():
+            filtered_models.append(model)
+        elif filter_lower == "lightweight":
+            # Lightweight = smaller than 0.5 GB
+            if model.size_in_GB < 0.5:
+                filtered_models.append(model)
+
+    return [m.model_dump() for m in filtered_models]
+
+
+@mcp.tool()
 async def qdrant_index_directory(
     path: str = Field(..., description="Directory path to index"),
     collection: str = Field(
@@ -327,11 +453,25 @@ async def qdrant_index_directory(
         default=["*.py", "*.go", "*.js", "*.ts", "*.java", "*.cs", "*.md"],
         description="File patterns to include",
     ),
+    model: str | None = Field(
+        default=None,
+        description="Embedding model to use (default: from settings). Example: 'jinaai/jina-embeddings-v2-base-code'",
+    ),
+    metadata: dict | None = Field(
+        default=None,
+        description="Extra metadata fields to store with each chunk (e.g., {'team': 'backend', 'visibility': 'internal'})",
+    ),
 ) -> dict[str, Any]:
     """Index a directory of code or documentation into Qdrant.
 
     This tool parses source files and adds their content as vectors
     to the specified collection for semantic search.
+
+    Use the model parameter to specify which embedding model to use:
+    - Default: uses EMBEDDING_MODEL from settings
+    - Code search: 'jinaai/jina-embeddings-v2-base-code'
+    - Multilingual KB: 'intfloat/multilingual-e5-large'
+    - Lightweight: 'BAAI/bge-small-en-v1.5'
     """
     try:
         indexer = get_indexer()
@@ -339,6 +479,8 @@ async def qdrant_index_directory(
             path=path,
             collection=collection,
             patterns=patterns,
+            model=model,
+            metadata=metadata,
         )
         return result
     except Exception as e:
@@ -350,19 +492,27 @@ async def qdrant_reindex(
     path: str = Field(..., description="Directory path to reindex"),
     collection: str = Field(..., description="Collection name to reindex"),
     mode: str = Field(default="incremental", description="Reindex mode: 'full' or 'incremental'"),
+    model: str | None = Field(
+        default=None,
+        description="Embedding model to use (default: from settings). Example: 'intfloat/multilingual-e5-large'",
+    ),
 ) -> dict[str, Any]:
     """Reindex a directory - either full rebuild or incremental update.
 
     Full mode deletes the collection and recreates it from scratch.
     Incremental mode only updates changed files.
+
+    Use the model parameter to change the embedding model:
+    - 'jinaai/jina-embeddings-v2-base-code' for code
+    - 'intfloat/multilingual-e5-large' for multilingual KB
     """
     try:
         indexer = get_indexer()
 
         if mode == "full":
-            result = indexer.full_reindex(path, collection)
+            result = indexer.full_reindex(path, collection, model=model)
         else:
-            result = indexer.incremental_reindex(path, collection)
+            result = indexer.incremental_reindex(path, collection, model=model)
 
         return result
     except Exception as e:

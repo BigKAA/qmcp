@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-[![Version](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -13,11 +13,15 @@
 
 - **Semantic Search**: Find code and documentation using natural language queries
 - **Multi-language Support**: Python, Go, JavaScript, TypeScript, Java, C#, Markdown
+- **Model Selection**: Choose embedding model per collection (code search, documentation, multilingual KB)
+- **Corporate Knowledge Base**: Multi-collection architecture for shared company-wide knowledge
+- **E5 Model Support**: Automatic query/passage prefix handling for `intfloat/multilingual-e5-large`
 - **Live Updates**: File watcher for automatic reindexing
 - **Incremental Indexing**: Only index changed files
 - **Gitignore Support**: Respects `.gitignore` - excludes `node_modules`, `__pycache__`, `.venv`, build artifacts, etc.
 - **Cleanup**: Remove stale vectors for deleted/changed files
 - **Diagnostics**: Introspection tools to understand what's indexed
+- **Multi-Collection Search**: Search across multiple collections simultaneously
 - **OpenCode Skill**: Natural language interface for Qdrant management
 
 ## Installation
@@ -76,7 +80,7 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 |---------------------|---------|-------------|
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Default embedding model (used when not specified per-collection) |
 | `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
 | `WATCH_PATHS` | `/data/repo` | Baseline paths to watch automatically on server startup |
 | `BATCH_SIZE` | `50` | Batch size for indexing |
@@ -84,12 +88,48 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
 
-> 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~13MB), subsequent launches use cached version.
+> 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~7-2240MB depending on model), subsequent launches use cached version.
+
+> 💡 **Model Selection**: The `EMBEDDING_MODEL` env var sets the **default** model. However, you can override it per-collection using the `model=` parameter in `qdrant_index_directory()` or `qdrant_reindex()`. Each collection stores its model in metadata automatically.
 
 > 💡 **WATCH_PATHS examples**:
 > - Single path: `WATCH_PATHS=/home/user/project`
 > - Multiple paths: `WATCH_PATHS=/home/user/project,/home/user/docs`
 > - JSON array: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
+
+## Choosing an Embedding Model
+
+qmcp supports multiple embedding models. Use `qdrant_list_supported_models()` to see all available models, or use the table below:
+
+| Use Case | Recommended Model | Dim | Size | Notes |
+|----------|------------------|-----|------|-------|
+| **Code search** | `jinaai/jina-embeddings-v2-base-code` | 768 | 0.64 GB | Best for code, 30+ languages |
+| **English docs (lightweight)** | `BAAI/bge-small-en-v1.5` | 384 | 0.07 GB | Fast, small, good quality |
+| **English docs (quality)** | `BAAI/bge-large-en-v1.5` | 1024 | 1.2 GB | Best quality for English |
+| **Multilingual KB (RU+EN)** | `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | Best for corporate KB, 100+ languages |
+| **Multilingual (lightweight)** | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | 0.22 GB | Compromise option |
+
+### E5 Model Prefix Handling (Automatic)
+
+> ⚠️ **Important**: The `intfloat/multilingual-e5-large` model requires special prefixes (`query: ` and `passage: `) for optimal results. **This is handled automatically by qmcp** — no user action needed!
+
+When you index or search with an E5 model, qmcp automatically:
+- Adds `passage: ` prefix to content during indexing
+- Adds `query: ` prefix to queries during search
+
+### Model Per Collection
+
+Each collection stores its embedding model in metadata. You can verify the model using:
+
+```
+qdrant_get_collection_info(collection="my-collection")
+# Returns: { ..., "embedding_model": "jinaai/jina-embeddings-v2-base-code" }
+```
+
+To change a collection's model, reindex with the new model:
+```
+qdrant_reindex(path="/path/to/code", collection="my-collection", model="jinaai/jina-embeddings-v2-base-code", mode="full")
+```
 
 ### 3. That's It!
 
@@ -164,8 +204,10 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 | Tool | Description |
 |------|-------------|
 | `qdrant_search` | Semantic search in code/docs |
-| `qdrant_index_directory` | Index a directory |
-| `qdrant_reindex` | Reindex (full or incremental) |
+| `qdrant_search_many` | Search across multiple collections simultaneously |
+| `qdrant_index_directory` | Index a directory with optional model selection |
+| `qdrant_reindex` | Reindex (full or incremental) with optional model change |
+| `qdrant_list_supported_models` | List available embedding models with metadata |
 
 > 💡 **Tip**: Use `qdrant_search` with filters for precise results:
 > - `chunk_type` — filter by code type (function_def, class_def, etc.)
@@ -174,12 +216,14 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 >
 > See [docs/STRUCTURED_METADATA.md](./docs/STRUCTURED_METADATA.md) for detailed examples.
 
+> 💡 **Model Selection**: Pass `model="jinaai/jina-embeddings-v2-base-code"` to `qdrant_index_directory` or `qdrant_reindex` to use a specific embedding model.
+
 ### Collection Management
 
 | Tool | Description |
 |------|-------------|
 | `qdrant_list_collections` | List all collections |
-| `qdrant_get_collection_info` | Get collection info |
+| `qdrant_get_collection_info` | Get collection info (includes `embedding_model` field) |
 | `qdrant_delete_collection` | Delete collection |
 
 ### Diagnostics & Introspection
@@ -215,6 +259,69 @@ qdrant_list_indexed_files(collection="myproject", file_type=".py")
 # Compare Qdrant state with filesystem
 qdrant_diff_collection(collection="myproject", repo_path="/path/to/repo")
 ```
+
+## Corporate Knowledge Base
+
+qmcp supports multi-collection architecture for corporate knowledge bases shared across teams and projects.
+
+### Collection Naming Convention
+
+| Collection Pattern | Purpose | Example Model |
+|-------------------|---------|---------------|
+| `company-kb-docs` | Corporate knowledge base (policies, wiki) | `intfloat/multilingual-e5-large` |
+| `company-kb-snippets` | Reusable templates, code snippets | `jinaai/jina-embeddings-v2-base-code` |
+| `team-<name>-docs` | Team-specific documentation | `BAAI/bge-small-en-v1.5` |
+| `team-<name>-code` | Team-specific shared code | `jinaai/jina-embeddings-v2-base-code` |
+| `project-<name>-code` | Project code | `jinaai/jina-embeddings-v2-base-code` |
+| `project-<name>-docs` | Project documentation | `BAAI/bge-small-en-v1.5` |
+
+### Example: Setting Up a Corporate KB
+
+```bash
+# 1. Index corporate documentation with multilingual model
+qdrant_index_directory(
+    path="/shared/corporate-docs",
+    collection="company-kb-docs",
+    model="intfloat/multilingual-e5-large",
+    metadata={"team": "docs-team", "visibility": "internal"}
+)
+
+# 2. Index shared code snippets
+qdrant_index_directory(
+    path="/shared/snippets",
+    collection="company-kb-snippets",
+    model="jinaai/jina-embeddings-v2-base-code",
+    metadata={"team": "all", "visibility": "public"}
+)
+
+# 3. Search across all collections
+qdrant_search_many(
+    collections=["company-kb-docs", "company-kb-snippets"],
+    query="How do I set up authentication?",
+    limit=10
+)
+```
+
+### Metadata Enrichment
+
+Add custom metadata to indexed chunks for filtering and organization:
+
+```bash
+qdrant_index_directory(
+    path="/project/docs",
+    collection="project-docs",
+    metadata={
+        "team": "backend",
+        "project": "api-gateway",
+        "visibility": "internal",
+        "source_system": "confluence"
+    }
+)
+```
+
+Search results will include your metadata fields for post-processing.
+
+For detailed setup instructions, see [docs/COLLECTION_SETUP.md](./docs/COLLECTION_SETUP.md).
 
 ## OpenCode Skill
 

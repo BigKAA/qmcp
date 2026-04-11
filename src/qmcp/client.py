@@ -21,9 +21,19 @@ from qdrant_client import QdrantClient, models
 from .config import get_settings
 from .logging_config import get_logger
 
+# E5 model prefix constants - these models require special prefixes for optimal performance
+E5_PREFIX_QUERY = "query: "
+E5_PREFIX_PASSAGE = "passage: "
+
 
 class QdrantConnectionError(Exception):
     """Raised when connection to Qdrant fails."""
+
+    pass
+
+
+class ModelMismatchError(Exception):
+    """Raised when the embedding model used for search/upsert doesn't match the collection's model."""
 
     pass
 
@@ -44,9 +54,10 @@ class QdrantClientWrapper:
         self.url = url or settings.qdrant_url
         self.api_key = api_key or settings.qdrant_api_key
         self._client: QdrantClient | None = None
-        self._embedding_model = settings.embedding_model
+        self._default_embedding_model = settings.embedding_model
         self._embedding_cache_dir = settings.embedding_cache_dir
-        self._embedding_model_instance: Any = None
+        # Cache multiple embedding models by name: {model_name: model_instance}
+        self._embedding_model_cache: dict[str, Any] = {}
 
     def connect(self) -> None:
         """Establish connection to Qdrant."""
@@ -60,57 +71,68 @@ class QdrantClientWrapper:
             # Test connection
             self._client.get_collections()
             self.logger.info("Successfully connected to Qdrant")
-            # Validate embedding model is available
-            self._load_embedding_model()
+            # Pre-load the default embedding model to validate it works
+            self._load_embedding_model(self._default_embedding_model)
         except Exception as e:
             self.logger.error(f"Failed to connect to Qdrant: {e}")
             raise QdrantConnectionError(f"Failed to connect to Qdrant at {self.url}: {e}")
 
-    def _load_embedding_model(self) -> None:
-        """Load and cache the embedding model.
+    def _load_embedding_model(self, model_name: str) -> Any:
+        """Load and cache an embedding model by name.
 
         Downloads the model if not cached, then validates it works.
-        This method ensures the model is available before any indexing operations.
+        This method ensures the model is available before any indexing or search operations.
+
+        Args:
+            model_name: Name of the embedding model to load
+
+        Returns:
+            The loaded embedding model instance
         """
         from fastembed import TextEmbedding
 
         # If model already loaded and cached, verify it's still valid
-        if self._embedding_model_instance is not None:
+        if model_name in self._embedding_model_cache:
             try:
                 # Quick verification that model still works
-                list(self._embedding_model_instance.query_embed("test"))
-                self.logger.debug("Embedding model instance verified")
-                return
+                list(self._embedding_model_cache[model_name].query_embed("test"))
+                self.logger.debug(f"Embedding model '{model_name}' instance verified from cache")
+                return self._embedding_model_cache[model_name]
             except Exception:
                 # Model instance corrupted, reload
-                self.logger.warning("Embedding model instance corrupted, reloading...")
-                self._embedding_model_instance = None
+                self.logger.warning(f"Embedding model '{model_name}' corrupted, reloading...")
+                del self._embedding_model_cache[model_name]
 
         self.logger.info(
-            f"Loading embedding model: {self._embedding_model}"
+            f"Loading embedding model: {model_name}"
             + (f" (cache: {self._embedding_cache_dir})" if self._embedding_cache_dir else "")
         )
 
         try:
             # Initialize model with custom cache directory if specified
-            init_kwargs: dict[str, Any] = {"model_name": self._embedding_model}
+            init_kwargs: dict[str, Any] = {"model_name": model_name}
             if self._embedding_cache_dir:
                 init_kwargs["cache_dir"] = self._embedding_cache_dir
                 self.logger.info(f"Using custom model cache directory: {self._embedding_cache_dir}")
 
-            self._embedding_model_instance = TextEmbedding(**init_kwargs)
+            model_instance = TextEmbedding(**init_kwargs)
 
             # Validate model works with a test encode
-            test_result = list(self._embedding_model_instance.query_embed("validation_test"))
+            test_result = list(model_instance.query_embed("validation_test"))
             if not test_result or len(test_result[0]) == 0:
                 raise QdrantConnectionError(
-                    f"Embedding model '{self._embedding_model}' returned empty vectors. "
+                    f"Embedding model '{model_name}' returned empty vectors. "
                     f"Model may be corrupted or incompatible."
                 )
 
+            # Cache the model
+            self._embedding_model_cache[model_name] = model_instance
+
             self.logger.info(
-                f"Embedding model loaded successfully. Vector dimension: {len(test_result[0])}"
+                f"Embedding model '{model_name}' loaded successfully. Vector dimension: {len(test_result[0])}"
             )
+
+            return model_instance
 
         except ImportError:
             raise QdrantConnectionError(
@@ -125,19 +147,17 @@ class QdrantClientWrapper:
                     else " (default location)"
                 )
                 raise QdrantConnectionError(
-                    f"Failed to download embedding model '{self._embedding_model}'"
+                    f"Failed to download embedding model '{model_name}'"
                     f"{cache_info}. Network error: {e}. "
                     f"Please check your internet connection and try again."
                 )
-            raise QdrantConnectionError(
-                f"Failed to load embedding model '{self._embedding_model}': {e}"
-            )
+            raise QdrantConnectionError(f"Failed to load embedding model '{model_name}': {e}")
         except Exception as e:
             cache_info = (
                 f" from cache '{self._embedding_cache_dir}'" if self._embedding_cache_dir else ""
             )
             raise QdrantConnectionError(
-                f"Failed to load embedding model '{self._embedding_model}'{cache_info}: {e}. "
+                f"Failed to load embedding model '{model_name}'{cache_info}: {e}. "
                 f"The model may need to be re-downloaded."
             )
 
@@ -157,6 +177,35 @@ class QdrantClientWrapper:
         except Exception:
             return False
 
+    @staticmethod
+    def is_e5_model(model_name: str) -> bool:
+        """Check if model is an E5 model that requires query/passage prefixes.
+
+        E5 models (like 'intfloat/multilingual-e5-large') require special prefixes:
+        - Queries must be prefixed with 'query: ' (with trailing space)
+        - Passages must be prefixed with 'passage: ' (with trailing space)
+
+        Args:
+            model_name: Name of the embedding model
+
+        Returns:
+            True if the model is an E5 model
+        """
+        return "e5" in model_name.lower()
+
+    def _get_embedding_model_instance(self, model_name: str) -> Any:
+        """Get embedding model instance from cache or load it.
+
+        Args:
+            model_name: Name of the embedding model
+
+        Returns:
+            The embedding model instance
+        """
+        if model_name in self._embedding_model_cache:
+            return self._embedding_model_cache[model_name]
+        return self._load_embedding_model(model_name)
+
     def get_collections(self) -> list[str]:
         """Get list of collection names."""
         result = self.client.get_collections()
@@ -165,6 +214,7 @@ class QdrantClientWrapper:
     def create_collection(
         self,
         name: str,
+        embedding_model: str | None = None,
         vector_size: int | None = None,
         distance: models.Distance = models.Distance.COSINE,
     ) -> None:
@@ -172,11 +222,19 @@ class QdrantClientWrapper:
 
         Args:
             name: Collection name
+            embedding_model: Model name to store in collection metadata (default: from settings)
             vector_size: Vector size (auto-detected from model if not provided)
             distance: Distance metric
         """
+        # Use provided model or fall back to default
+        model_name = embedding_model or self._default_embedding_model
+
         if vector_size is None:
-            vector_size = self.client.get_embedding_size(self._embedding_model)
+            # Ensure model is loaded to get its vector size
+            model_instance = self._get_embedding_model_instance(model_name)
+            # Get vector size by generating a test embedding
+            test_vec = list(model_instance.query_embed("size_test"))
+            vector_size = len(test_vec[0]) if test_vec else 0
 
         self.client.create_collection(
             collection_name=name,
@@ -184,6 +242,12 @@ class QdrantClientWrapper:
                 size=vector_size,
                 distance=distance,
             ),
+        )
+
+        # Store embedding model in collection metadata
+        self.client.set_collection_metadata(
+            collection_name=name,
+            metadata={"embedding_model": model_name},
         )
 
     def delete_collection(self, name: str) -> None:
@@ -195,15 +259,55 @@ class QdrantClientWrapper:
         return name in self.get_collections()
 
     def get_collection_info(self, name: str) -> dict[str, Any]:
-        """Get collection information."""
+        """Get collection information including stored metadata.
+
+        Args:
+            name: Collection name
+
+        Returns:
+            Dictionary with collection info including embedding_model
+        """
         info = self.client.get_collection(collection_name=name)
+
+        # Try to get embedding_model from collection metadata
+        embedding_model = None
+        try:
+            metadata = self.client.get_collection_metadata(collection_name=name)
+            if metadata:
+                embedding_model = metadata.get("embedding_model")
+        except Exception:
+            # Metadata might not exist for older collections
+            pass
+
         return {
             "name": name,
             "points_count": info.points_count,
             "indexed_vectors_count": info.indexed_vectors_count,
             "status": info.status.name,
             "vector_size": info.config.params.size if info.config and info.config.params else 0,
+            "embedding_model": embedding_model,
         }
+
+    def get_embedding_model_for_collection(self, collection_name: str) -> str:
+        """Get the embedding model used by a collection.
+
+        Reads the model name from collection metadata. Falls back to default
+        model if no metadata is found (for backward compatibility).
+
+        Args:
+            collection_name: Name of the collection
+
+        Returns:
+            The embedding model name
+
+        Raises:
+            CollectionNotFoundError: If collection doesn't exist
+        """
+        if not self.collection_exists(collection_name):
+            raise ValueError(f"Collection '{collection_name}' does not exist")
+
+        info = self.get_collection_info(collection_name)
+        return info.get("embedding_model") or self._default_embedding_model
 
     def validate_collection_vectors(self, name: str) -> dict[str, Any]:
         """Validate that collection vectors have proper dimensions.
@@ -253,6 +357,10 @@ class QdrantClientWrapper:
         Returns:
             List of search results with payload
         """
+        # Get the embedding model for this collection
+        collection_model = self.get_embedding_model_for_collection(collection)
+        model_instance = self._get_embedding_model_instance(collection_model)
+
         # Build filter conditions
         filter_conditions = []
 
@@ -294,11 +402,14 @@ class QdrantClientWrapper:
         if filter_conditions:
             query_filter = models.Filter(must=filter_conditions)
 
-        # Generate query embedding using cached model
-        if self._embedding_model_instance is None:
-            self._load_embedding_model()
+        # Apply E5 prefix if this is an E5 model
+        query_text = query
+        if self.is_e5_model(collection_model):
+            query_text = f"{E5_PREFIX_QUERY}{query}"
+            self.logger.debug(f"E5 model detected, applying query prefix: '{E5_PREFIX_QUERY}'")
 
-        query_vectors = list(self._embedding_model_instance.query_embed(query))
+        # Generate query embedding using the collection's model
+        query_vectors = list(model_instance.query_embed(query_text))
         if not query_vectors or len(query_vectors[0]) == 0:
             self.logger.error("Query embedding returned empty vector")
             return []
@@ -333,6 +444,7 @@ class QdrantClientWrapper:
         self,
         collection: str,
         points: list[dict[str, Any]],
+        embedding_model: str | None = None,
         batch_size: int = 50,
     ) -> int:
         """Upsert points into collection.
@@ -340,6 +452,7 @@ class QdrantClientWrapper:
         Args:
             collection: Collection name
             points: List of points to insert
+            embedding_model: Embedding model to use (auto-detected from collection if not provided)
             batch_size: Batch size for insertion
 
         Returns:
@@ -347,13 +460,21 @@ class QdrantClientWrapper:
         """
         from qdrant_client.models import PointStruct
 
-        # Ensure embedding model is loaded
-        if self._embedding_model_instance is None:
-            self._load_embedding_model()
+        # Determine which model to use
+        if embedding_model is None:
+            embedding_model = self.get_embedding_model_for_collection(collection)
+
+        model_instance = self._get_embedding_model_instance(embedding_model)
 
         # Generate embeddings for all points
         contents = [point["content"] for point in points]
-        all_embeddings = list(self._embedding_model_instance.passage_embed(contents))
+
+        # Apply E5 prefix if this is an E5 model
+        if self.is_e5_model(embedding_model):
+            self.logger.debug(f"E5 model detected, applying passage prefix: '{E5_PREFIX_PASSAGE}'")
+            contents = [f"{E5_PREFIX_PASSAGE}{content}" for content in contents]
+
+        all_embeddings = list(model_instance.passage_embed(contents))
 
         structured_points = []
         for i, point in enumerate(points):
@@ -426,3 +547,43 @@ class QdrantClientWrapper:
                 break
 
         return all_points
+
+    def search_many(
+        self,
+        collections: list[str],
+        query: str,
+        limit: int = 10,
+        score_threshold: float = 0.7,
+    ) -> list[dict[str, Any]]:
+        """Search across multiple collections and merge results.
+
+        Args:
+            collections: List of collection names to search
+            query: Search query text
+            limit: Max results per collection (total results may exceed this)
+            score_threshold: Minimum score threshold
+
+        Returns:
+            Combined list of search results from all collections, sorted by score descending
+        """
+        all_results = []
+
+        for collection in collections:
+            try:
+                results = self.search(
+                    collection=collection,
+                    query=query,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                )
+                # Add collection name to each result
+                for result in results:
+                    result["collection"] = collection
+                all_results.extend(results)
+            except Exception as e:
+                self.logger.warning(f"Error searching collection '{collection}': {e}")
+
+        # Sort by score descending
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+
+        return all_results

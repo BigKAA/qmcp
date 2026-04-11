@@ -18,6 +18,41 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# ============================================================================
+# Model Selection Models
+# ============================================================================
+
+
+class SupportedModel(BaseModel):
+    """Supported embedding model with metadata."""
+
+    model: str = Field(..., description="Full model name (e.g., 'BAAI/bge-small-en-v1.5')")
+    dim: int = Field(..., description="Embedding dimension")
+    size_in_gb: float = Field(..., description="Model size in GB")
+    languages: str = Field(
+        ..., description="Supported languages (e.g., 'English', 'Multilingual (100+)')"
+    )
+    use_case: str = Field(
+        ...,
+        description="Primary use case (e.g., 'code search', 'documentation', 'multilingual KB')",
+    )
+    notes: str = Field(..., description="Additional notes about the model")
+    has_prefix: bool = Field(
+        default=False,
+        description="Whether this model requires 'query:' / 'passage:' prefixes (E5 models)",
+    )
+
+
+class SearchManyRequest(BaseModel):
+    """Request model for searching multiple collections."""
+
+    collections: list[str] = Field(..., description="List of collection names to search")
+    query: str = Field(..., description="Search query text")
+    limit: int = Field(default=10, ge=1, le=100, description="Maximum results per collection")
+    score_threshold: float = Field(
+        default=0.7, ge=0.0, le=1.0, description="Minimum score threshold"
+    )
+
 
 class SearchRequest(BaseModel):
     """Request model for search operation."""
@@ -36,10 +71,18 @@ class IndexRequest(BaseModel):
     """Request model for indexing operation."""
 
     path: str = Field(..., description="Directory path to index")
-    collection: Literal["code", "docs"] = Field(default="code", description="Target collection")
+    collection: str = Field(..., description="Target collection name")
     patterns: list[str] = Field(
         default=["*.py", "*.go", "*.js", "*.ts", "*.java", "*.cs", "*.md"],
         description="File patterns to include",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Embedding model to use (default: from settings). Example: 'jinaai/jina-embeddings-v2-base-code'",
+    )
+    metadata: dict | None = Field(
+        default=None,
+        description="Extra metadata fields to store with each chunk (e.g., {'team': 'backend', 'visibility': 'internal'})",
     )
 
 
@@ -47,8 +90,12 @@ class ReindexRequest(BaseModel):
     """Request model for reindex operation."""
 
     path: str = Field(..., description="Directory path to reindex")
-    collection: Literal["code", "docs"] = Field(default="code", description="Target collection")
+    collection: str = Field(..., description="Target collection name")
     mode: Literal["full", "incremental"] = Field(default="incremental", description="Reindex mode")
+    model: str | None = Field(
+        default=None,
+        description="Embedding model to use (default: from settings). Example: 'intfloat/multilingual-e5-large'",
+    )
 
 
 class WatchRequest(BaseModel):
@@ -74,7 +121,7 @@ class WatchEnsureRequest(BaseModel):
 class CleanupRequest(BaseModel):
     """Request model for cleanup operation."""
 
-    collection: Literal["code", "docs"] = Field(..., description="Collection to clean")
+    collection: str = Field(..., description="Collection name to clean")
     dry_run: bool = Field(default=True, description="If True, only report what would be deleted")
 
 
@@ -85,6 +132,10 @@ class CollectionInfo(BaseModel):
     points_count: int
     indexed_vectors_count: int
     status: str
+    embedding_model: str | None = Field(
+        default=None,
+        description="Embedding model used for this collection (e.g., 'BAAI/bge-small-en-v1.5')",
+    )
 
 
 class SearchResult(BaseModel):

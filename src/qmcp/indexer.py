@@ -54,6 +54,8 @@ class Indexer:
         path: str,
         collection: str = "code",
         patterns: list[str] | None = None,
+        model: str | None = None,
+        metadata: dict | None = None,
     ) -> dict[str, Any]:
         """Index all files in a directory.
 
@@ -61,6 +63,8 @@ class Indexer:
             path: Directory path to index
             collection: Target collection name
             patterns: File patterns to include
+            model: Embedding model to use (default: from settings)
+            metadata: Extra metadata fields to store with each chunk
 
         Returns:
             Indexing results
@@ -77,10 +81,10 @@ class Indexer:
                 "error": f"Path does not exist: {path}",
             }
 
-        # Ensure collection exists
+        # Ensure collection exists with correct model
         if not self.qdrant.collection_exists(collection):
-            self.logger.debug(f"Creating collection {collection}")
-            self.qdrant.create_collection(collection)
+            self.logger.debug(f"Creating collection {collection} with model {model or 'default'}")
+            self.qdrant.create_collection(collection, embedding_model=model)
 
         # Find all matching files
         files = self._find_files(path_obj, patterns or self.DEFAULT_PATTERNS)
@@ -92,7 +96,7 @@ class Indexer:
         points_updated = 0
 
         for file_path in files:
-            result = self._index_file(file_path, collection)
+            result = self._index_file(file_path, collection, model=model, extra_metadata=metadata)
             if result["status"] == "added":
                 points_added += result["points"]
             elif result["status"] == "updated":
@@ -167,8 +171,21 @@ class Indexer:
         # Remove duplicates and filter to only existing files
         return list(set(f for f in files if f.is_file()))
 
-    def _index_file(self, file_path: Path, collection: str) -> dict[str, Any]:
-        """Index a single file."""
+    def _index_file(
+        self,
+        file_path: Path,
+        collection: str,
+        model: str | None = None,
+        extra_metadata: dict | None = None,
+    ) -> dict[str, Any]:
+        """Index a single file.
+
+        Args:
+            file_path: Path to the file
+            collection: Collection name
+            model: Embedding model to use
+            extra_metadata: Extra metadata to include in payload
+        """
         parser = find_parser(file_path)
 
         if not parser:
@@ -193,31 +210,39 @@ class Indexer:
         # Prepare points for upsert
         points = []
         for chunk in chunks:
+            # Build payload with base fields
+            payload = {
+                "file_path": str(file_path),
+                "content_hash": current_hash,
+                "type": chunk.chunk_type,
+                "name": chunk.name,
+                "docstring": chunk.docstring,
+                "line_start": chunk.line_start,
+                "line_end": chunk.line_end,
+                # Extended metadata for structured filtering
+                "signature": chunk.signature,
+                "symbol_names": chunk.symbol_names,
+                "imports": chunk.imports,
+                "language": chunk.language,
+            }
+            # Merge extra metadata if provided
+            if extra_metadata:
+                payload.update(extra_metadata)
+
             point = {
                 "id": str(
                     uuid.uuid5(uuid.NAMESPACE_DNS, f"{file_path}:{chunk.name}:{chunk.line_start}")
                 ),
                 "content": chunk.content,
-                "payload": {
-                    "file_path": str(file_path),
-                    "content_hash": current_hash,
-                    "type": chunk.chunk_type,
-                    "name": chunk.name,
-                    "docstring": chunk.docstring,
-                    "line_start": chunk.line_start,
-                    "line_end": chunk.line_end,
-                    # Extended metadata for structured filtering
-                    "signature": chunk.signature,
-                    "symbol_names": chunk.symbol_names,
-                    "imports": chunk.imports,
-                    "language": chunk.language,
-                },
+                "payload": payload,
             }
             points.append(point)
 
-        # Upsert points
+        # Upsert points with the specified model
         if points:
-            self.qdrant.upsert(collection, points, self.batch_size)
+            self.qdrant.upsert(
+                collection, points, embedding_model=model, batch_size=self.batch_size
+            )
 
         status = "updated" if existing_points else "added"
         return {"status": status, "points": len(points)}
@@ -239,6 +264,7 @@ class Indexer:
         path: str,
         collection: str = "code",
         patterns: list[str] | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Perform full reindex - delete and recreate collection.
 
@@ -246,6 +272,7 @@ class Indexer:
             path: Directory path
             collection: Collection name
             patterns: File patterns
+            model: Embedding model to use
 
         Returns:
             Indexing results
@@ -254,17 +281,25 @@ class Indexer:
         if self.qdrant.collection_exists(collection):
             self.qdrant.delete_collection(collection)
 
-        # Recreate and index
-        return self.index_directory(path, collection, patterns)
+        # Recreate and index with the specified model
+        return self.index_directory(path, collection, patterns, model=model)
 
     def incremental_reindex(
         self,
         path: str,
         collection: str = "code",
         patterns: list[str] | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Perform incremental reindex - only new/changed files.
 
-        This is the same as index_directory since it already checks hashes.
+        Args:
+            path: Directory path
+            collection: Collection name
+            patterns: File patterns
+            model: Embedding model to use
+
+        Returns:
+            Indexing results
         """
-        return self.index_directory(path, collection, patterns)
+        return self.index_directory(path, collection, patterns, model=model)

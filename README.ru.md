@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server для OpenCode
 
-[![Версия](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Версия](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![Лицензия](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -13,11 +13,15 @@
 
 - **Семантический поиск**: Находите код и документацию с помощью запросов на естественном языке
 - **Поддержка нескольких языков**: Python, Go, JavaScript, TypeScript, Java, C#, Markdown
+- **Выбор модели**: Выбирайте модель эмбеддингов для каждой коллекции (поиск по коду, документация, мультиязычная база знаний)
+- **Корпоративная база знаний**: Архитектура с несколькими коллекциями для общей корпоративной информации
+- **Поддержка E5 модели**: Автоматическое добавление префиксов `query:` и `passage:` для модели `intfloat/multilingual-e5-large`
 - **Автоматическое обновление**: Следит за изменениями файлов и автоматически переиндексирует
 - **Инкрементальная индексация**: Индексирует только изменённые файлы
 - **Поддержка .gitignore**: Уважает `.gitignore` — исключает `node_modules`, `__pycache__`, `.venv` и т.д.
 - **Очистка**: Удаляет устаревшие векторы для удалённых/изменённых файлов
 - **Диагностика**: Инструменты для понимания того, что проиндексировано
+- **Поиск по нескольким коллекциям**: Одновременный поиск по нескольким коллекциям
 - **OpenCode Skill**: Интерфейс на естественном языке для управления Qdrant
 
 ## Установка
@@ -76,20 +80,56 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 |---------------------|-------------|----------|
 | `QDRANT_URL` | `http://localhost:6333` | URL сервера Qdrant |
 | `QDRANT_API_KEY` | (нет) | API ключ Qdrant (опционально) |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Модель эмбеддингов |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Модель эмбеддингов по умолчанию (используется когда не указана для коллекции) |
 | `EMBEDDING_CACHE_DIR` | (системный tmp) | Кастомная директория для кэша модели |
 | `WATCH_PATHS` | `/data/repo` | Базовые пути, которые автоматически отслеживаются при старте сервера |
 | `BATCH_SIZE` | `50` | Размер пакета для индексации |
 | `DEBOUNCE_SECONDS` | `5` | Задержка debounce |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
-| `LOG_FORMAT` | `text` | Формат л��гов (`text` или `json`) |
+| `LOG_FORMAT` | `text` | Формат логов (`text` или `json`) |
 
-> 💡 **Кэш модели**: Установите `EMBEDDING_CACHE_DIR` для сохранения модели между запусками. Первый запуск загружает модель (~13MB), последующие используют кэш.
+> 💡 **Кэш модели**: Установите `EMBEDDING_CACHE_DIR` для сохранения модели между запусками. Первый запуск загружает модель (~7-2240MB в зависимости от модели), последующие используют кэш.
+
+> 💡 **Выбор модели**: Переменная `EMBEDDING_MODEL` устанавливает модель **по умолчанию**. Однако вы можете переопределить её для каждой коллекции с помощью параметра `model=` в `qdrant_index_directory()` или `qdrant_reindex()`. Каждая коллекция автоматически сохраняет свою модель в метаданных.
 
 > 💡 **Примеры WATCH_PATHS**:
 > - Один путь: `WATCH_PATHS=/home/user/project`
 > - Несколько путей: `WATCH_PATHS=/home/user/project,/home/user/docs`
 > - JSON-массив: `WATCH_PATHS=["/home/user/project", "/home/user/docs"]`
+
+## Выбор модели эмбеддингов
+
+qmcp поддерживает несколько моделей эмбеддингов. Используйте `qdrant_list_supported_models()` для просмотра всех доступных моделей:
+
+| Сценарий использования | Рекомендуемая модель | Dim | Размер | Примечания |
+|-----------------------|---------------------|-----|--------|-----------|
+| **Поиск по коду** | `jinaai/jina-embeddings-v2-base-code` | 768 | 0.64 GB | Лучшая для кода, 30+ языков |
+| **Документация EN (лёгкая)** | `BAAI/bge-small-en-v1.5` | 384 | 0.07 GB | Быстрая, маленькая, хорошее качество |
+| **Документация EN (качество)** | `BAAI/bge-large-en-v1.5` | 1024 | 1.2 GB | Лучшее качество для английского |
+| **Мультиязычная БЗ (RU+EN)** | `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | Лучшая для корпоративной БЗ, 100+ языков |
+| **Мультиязычная (лёгкая)** | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | 0.22 GB | Компромиссный вариант |
+
+### Автоматическая обработка префиксов E5 модели
+
+> ⚠️ **Важно**: Модель `intfloat/multilingual-e5-large` требует специальные префиксы (`query: ` и `passage: `) для оптимальных результатов. **Это обрабатывается автоматически qmcp** — никаких действий не требуется!
+
+При индексации или поиске с E5 моделью qmcp автоматически:
+- Добавляет префикс `passage: ` к содержимому при индексации
+- Добавляет префикс `query: ` к запросам при поиске
+
+### Модель для каждой коллекции
+
+Каждая коллекция хранит свою модель эмбеддингов в метаданных. Проверить модель можно через:
+
+```
+qdrant_get_collection_info(collection="my-collection")
+# Возвращает: { ..., "embedding_model": "jinaai/jina-embeddings-v2-base-code" }
+```
+
+Чтобы изменить модель коллекции, переиндексируйте с новой моделью:
+```
+qdrant_reindex(path="/path/to/code", collection="my-collection", model="jinaai/jina-embeddings-v2-base-code", mode="full")
+```
 
 ### 3. Готово!
 
@@ -164,8 +204,10 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 | Инструмент | Описание |
 |------------|---------|
 | `qdrant_search` | Семантический поиск в коде/документации |
-| `qdrant_index_directory` | Индексировать директорию |
-| `qdrant_reindex` | Переиндексировать (полное или инкрементальное) |
+| `qdrant_search_many` | Поиск по нескольким коллекциям одновременно |
+| `qdrant_index_directory` | Индексировать директорию с выбором модели |
+| `qdrant_reindex` | Переиндексировать (полное или инкрементальное) с возможностью сменить модель |
+| `qdrant_list_supported_models` | Список доступных моделей эмбеддингов с метаданными |
 
 > 💡 **Совет**: Используйте `qdrant_search` с фильтрами для точных результатов:
 > - `chunk_type` — фильтр по типу кода (function_def, class_def и т.д.)
@@ -174,12 +216,14 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 >
 > Подробные примеры см. в [docs/STRUCTURED_METADATA.ru.md](./docs/STRUCTURED_METADATA.ru.md).
 
+> 💡 **Выбор модели**: Передайте `model="jinaai/jina-embeddings-v2-base-code"` в `qdrant_index_directory` или `qdrant_reindex` для использования конкретной модели эмбеддингов.
+
 ### Управление коллекциями
 
 | Инструмент | Описание |
 |------------|---------|
 | `qdrant_list_collections` | Список всех коллекций |
-| `qdrant_get_collection_info` | Информация о коллекции |
+| `qdrant_get_collection_info` | Информация о коллекции (включает поле `embedding_model`) |
 | `qdrant_delete_collection` | Удалить коллекцию |
 
 ### Диагностика и интроспекция
@@ -215,6 +259,69 @@ qdrant_list_indexed_files(collection="myproject", file_type=".py")
 # Сравнение состояния Qdrant с файловой системой
 qdrant_diff_collection(collection="myproject", repo_path="/path/to/repo")
 ```
+
+## Корпоративная база знаний
+
+qmcp поддерживает архитектуру с несколькими коллекциями для корпоративных баз знаний, доступных всем командам и проектам.
+
+### Соглашение о наименовании коллекций
+
+| Паттерн коллекции | Назначение | Рекомендуемая модель |
+|-----------------|-----------|---------------------|
+| `company-kb-docs` | Корпоративная база знаний (политики, wiki) | `intfloat/multilingual-e5-large` |
+| `company-kb-snippets` | Переиспользуемые шаблоны, сниппеты кода | `jinaai/jina-embeddings-v2-base-code` |
+| `team-<name>-docs` | Документация команды | `BAAI/bge-small-en-v1.5` |
+| `team-<name>-code` | Общий код команды | `jinaai/jina-embeddings-v2-base-code` |
+| `project-<name>-code` | Код проекта | `jinaai/jina-embeddings-v2-base-code` |
+| `project-<name>-docs` | Документация проекта | `BAAI/bge-small-en-v1.5` |
+
+### Пример: Настройка корпоративной базы знаний
+
+```bash
+# 1. Индексация корпоративной документации с мультиязычной моделью
+qdrant_index_directory(
+    path="/shared/corporate-docs",
+    collection="company-kb-docs",
+    model="intfloat/multilingual-e5-large",
+    metadata={"team": "docs-team", "visibility": "internal"}
+)
+
+# 2. Индексация общих сниппетов кода
+qdrant_index_directory(
+    path="/shared/snippets",
+    collection="company-kb-snippets",
+    model="jinaai/jina-embeddings-v2-base-code",
+    metadata={"team": "all", "visibility": "public"}
+)
+
+# 3. Поиск по всем коллекциям
+qdrant_search_many(
+    collections=["company-kb-docs", "company-kb-snippets"],
+    query="How do I set up authentication?",
+    limit=10
+)
+```
+
+### Обогащение метаданными
+
+Добавляйте кастомные метаданные к проиндексированным чанкам для фильтрации и организации:
+
+```bash
+qdrant_index_directory(
+    path="/project/docs",
+    collection="project-docs",
+    metadata={
+        "team": "backend",
+        "project": "api-gateway",
+        "visibility": "internal",
+        "source_system": "confluence"
+    }
+)
+```
+
+Результаты поиска будут включать ваши поля метаданных для постобработки.
+
+Подробные инструкции по настройке см. в [docs/COLLECTION_SETUP.md](./docs/COLLECTION_SETUP.md).
 
 ## OpenCode Skill
 
