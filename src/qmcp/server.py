@@ -227,7 +227,8 @@ async def app_lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
 # Initialize MCP server (SDK v2: MCPServer replaces FastMCP).
 # Transport options (host, port, json_response) are passed to run() instead
 # of the constructor - see __main__.py and main.py.
-mcp = MCPServer("Qdrant Vector Search", lifespan=app_lifespan)
+# version= populates serverInfo in the initialize response.
+mcp = MCPServer("Qdrant Vector Search", version=__version__, lifespan=app_lifespan)
 
 
 def get_qdrant_client() -> QdrantClientWrapper:

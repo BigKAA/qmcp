@@ -22,6 +22,7 @@ import qmcp.server as server_module
 from qmcp.config import Settings
 from qmcp.server import (
     app_lifespan,
+    mcp,
     qdrant_get_status,
     qdrant_list_collections,
     qdrant_search,
@@ -119,6 +120,13 @@ class TestMcpServer:
 
         mock_ensure.assert_awaited_once()
         mock_stop.assert_awaited_once()
+
+    def test_server_identity_includes_version(self):
+        """MCP initialize response must report the package version."""
+        from qmcp import __version__
+
+        assert mcp.name == "Qdrant Vector Search"
+        assert mcp.version == __version__
 
     def test_settings_parse_watch_paths_from_plain_env_string(self):
         """Test WATCH_PATHS accepts plain comma-separated environment values."""
