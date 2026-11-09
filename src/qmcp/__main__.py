@@ -34,7 +34,7 @@ def main():
     print(f"Qdrant URL: {qdrant_url}")
     sys.stdout.flush()
 
-    # Run server - FastMCP.run() handles stdio blocking
+    # Run server - MCPServer.run() handles stdio blocking
     mcp.run(transport=transport)
 
 

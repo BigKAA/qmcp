@@ -13,6 +13,8 @@
 
 - **Semantic Search**: Find code and documentation using natural language queries
 - **Multi-language Support**: Python, Go, JavaScript, TypeScript, Java, C#, Markdown
+- **Markdown Section Chunking**: Markdown files are split into per-section chunks (`##`/`###` headers) with precise line ranges - search points at the exact section instead of the whole file, and file tails beyond 10 KB are indexed too
+- **Compact Search Responses**: Search returns pointer fields only (`file_path`, `line_start`, `line_end`, `type`, `name`) - enough for a targeted read, without bloating the context
 - **Live Updates**: File watcher for automatic reindexing
 - **Incremental Indexing**: Only index changed files
 - **Gitignore Support**: Respects `.gitignore` - excludes `node_modules`, `__pycache__`, `.venv`, build artifacts, etc.
@@ -138,6 +140,24 @@ For large codebases, prefer:
 - **Incremental reindex** (`mode="incremental"`) - only updates changed files based on content hashes
 - **File watcher** - enables automatic live updates when files change
 
+### Markdown Chunking
+
+Markdown files are chunked per section (headers `##` and `###` by default). Oversized sections (> 8 KB) are additionally split by paragraph boundaries, never inside code fences. Each chunk carries precise `line_start`/`line_end`, so `qdrant_search` results point to the exact section for a targeted read.
+
+Files without headers fall back to a single `document` chunk (paragraph-split when oversized).
+
+> ⚠️ **BREAKING (existing collections)**: The chunk schema changed (per-section chunks instead of one chunk per markdown file). Existing markdown collections **must be fully reindexed** after upgrading:
+>
+> ```python
+> qdrant_reindex(path="/path/to/project", collection="docs", mode="full")
+> ```
+>
+> Incremental reindex will not migrate unchanged files - they keep the old single-chunk layout until a full reindex runs.
+
+### Score Threshold Note
+
+The default `score_threshold=0.7` is calibrated for `bge-*` embedding models. For `paraphrase-multilingual-*` models the top score is typically ~0.64, so the default threshold filters out everything - lower the threshold explicitly for those models.
+
 ### Automatic Indexing Strategy
 
 `qmcp` supports automatic indexing on two levels:
@@ -168,9 +188,11 @@ qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 | `qdrant_reindex` | Reindex (full or incremental) |
 
 > 💡 **Tip**: Use `qdrant_search` with filters for precise results:
-> - `chunk_type` — filter by code type (function_def, class_def, etc.)
-> - `symbol_name` — find exact symbol by name
+> - `chunk_type` — filter by code type (function_def, class_def, `section`, document)
+> - `symbol_name` — find exact symbol by name (for markdown: section header text)
 > - `language` — filter by programming language
+>
+> Results are compact pointers (`score`, `file_path`, `type`, `name`, `line_start`, `line_end`) - use them for a targeted file read instead of loading whole files.
 >
 > See [docs/STRUCTURED_METADATA.md](./docs/STRUCTURED_METADATA.md) for detailed examples.
 

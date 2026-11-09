@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-09
+
+### Added
+- Markdown section chunking: files are split into per-section chunks (`##`/`###` headers, configurable levels) with precise `line_start`/`line_end`; oversized sections (> 8 KB) are split by paragraph boundaries, never inside code fences; files without headers keep a single `document` chunk
+- File tails beyond the former 10 KB embedding cap are now indexed
+- Tests for the Markdown parser (sectioning, code-fence handling, merging, splitting, `imports` extraction) and for compact search responses
+
+### Changed
+- **BREAKING for existing collections**: the markdown chunk schema changed (per-section chunks instead of one chunk per file) - existing markdown collections require a full reindex (`mode="full"`) after upgrading
+- `qdrant_search` now returns compact pointer fields only (`score`, `file_path`, `type`, `name`, `line_start`, `line_end`, `language`, optional `signature`); the always-empty `content`, `imports` and `symbol_names` fields were removed (~90% smaller responses)
+- Markdown chunk `imports` now holds unique code-block languages from fence opener lines (max 5) instead of the first word of every line inside blocks
+- Changed files now have their stale points deleted before re-upsert (previously a re-chunked file left duplicate chunks behind)
+- Migrated from MCP Python SDK v1 (`FastMCP`) to v2 (`MCPServer`); tool surface and wire protocol are unchanged
+
+### Fixed
+- `file_path_pattern` now performs real glob matching (fnmatch) against the full path; previously `*.py` was treated as full-text token matching and silently failed as a suffix filter
+
 ## [0.2.4] - 2026-04-10
 
 ### Added

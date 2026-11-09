@@ -49,6 +49,51 @@ class TestIndexer:
         indexer = Indexer(mock_client, batch_size=100)
         assert indexer.batch_size == 100
 
+    def test_changed_file_deletes_stale_points(self, mock_client, tmp_path):
+        """Changed file removes old chunks before upserting new ones.
+
+        Chunk IDs derive from (file, name, line_start), so a re-sectioned
+        markdown file produces different IDs - old points must be deleted
+        instead of lingering as duplicates.
+        """
+        doc = tmp_path / "doc.md"
+        doc.write_text(
+            "# Title\n\n## Old Section\n\n" + ("text " * 60) + "\n",
+            encoding="utf-8",
+        )
+
+        # Existing point from the previous (single-chunk) layout
+        mock_client.get_all_points.return_value = [
+            {"id": "old-point-id", "payload": {"file_path": str(doc), "content_hash": "a" * 64}}
+        ]
+
+        indexer = Indexer(mock_client)
+        result = indexer._index_file(doc, collection="docs")
+
+        assert result["status"] == "updated"
+        assert result["points"] >= 1
+        mock_client.delete_points.assert_called_once_with("docs", ["old-point-id"])
+        mock_client.upsert.assert_called_once()
+
+    def test_unchanged_file_keeps_points(self, mock_client, tmp_path):
+        """Unchanged file (same hash) is skipped without deletes or upserts."""
+        import hashlib
+
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Title\n\nbody\n", encoding="utf-8")
+
+        current_hash = hashlib.sha256(doc.read_bytes()).hexdigest()
+        mock_client.get_all_points.return_value = [
+            {"id": "p1", "payload": {"file_path": str(doc), "content_hash": current_hash}}
+        ]
+
+        indexer = Indexer(mock_client)
+        result = indexer._index_file(doc, collection="docs")
+
+        assert result["status"] == "unchanged"
+        mock_client.delete_points.assert_not_called()
+        mock_client.upsert.assert_not_called()
+
 
 class TestGitignore:
     """Tests for .gitignore support."""

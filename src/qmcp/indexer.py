@@ -190,6 +190,16 @@ class Indexer:
             if existing_hash == current_hash:
                 return {"status": "unchanged", "points": 0}
 
+            # Chunk IDs are derived from (file, name, line_start), so a changed
+            # file may produce a different chunk set (e.g. re-sectioned
+            # markdown). Delete stale points first to avoid duplicates.
+            try:
+                self.qdrant.delete_points(
+                    collection, [str(point["id"]) for point in existing_points]
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to delete stale points for {file_path}: {e}")
+
         # Prepare points for upsert
         points = []
         for chunk in chunks:

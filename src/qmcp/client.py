@@ -14,6 +14,7 @@
 
 """Qdrant client wrapper for qmcp."""
 
+from fnmatch import fnmatch
 from typing import Any
 
 from qdrant_client import QdrantClient, models
@@ -248,10 +249,14 @@ class QdrantClientWrapper:
             chunk_type: Filter by chunk type (e.g., "function_def", "class_def")
             symbol_name: Filter by exact symbol name match
             language: Filter by programming language (e.g., "python", "go")
-            file_path_pattern: Filter by file path glob pattern (e.g., "*.py")
+            file_path_pattern: Filter results by file path glob pattern (e.g., "*.py",
+                "docs/**"). Matched client-side with fnmatch against the full path,
+                so "*" and "?" wildcards work as expected.
 
         Returns:
-            List of search results with payload
+            List of compact search results (score, file_path, type, name,
+            line_start, line_end, language and optional signature) - enough
+            for an LLM to perform a targeted file read
         """
         # Build filter conditions
         filter_conditions = []
@@ -280,15 +285,6 @@ class QdrantClientWrapper:
                 )
             )
 
-        if file_path_pattern:
-            # Convert glob pattern to Qdrant match
-            filter_conditions.append(
-                models.FieldCondition(
-                    key="file_path",
-                    match=models.MatchText(text=file_path_pattern),
-                )
-            )
-
         # Build query filter
         query_filter = None
         if filter_conditions:
@@ -312,22 +308,34 @@ class QdrantClientWrapper:
             with_payload=True,
         )
 
-        return [
-            {
+        # Compact response: only pointer fields an LLM needs for a targeted
+        # read. "content" was never stored in payloads (always empty), and
+        # "imports"/"symbol_names" bloated every answer with junk data.
+        results_list = []
+        for hit in results.points:
+            payload = hit.payload or {}
+            item: dict[str, Any] = {
                 "score": hit.score,
-                "file_path": hit.payload.get("file_path", ""),
-                "content": hit.payload.get("content", ""),
-                "type": hit.payload.get("type", "unknown"),
-                "line_start": hit.payload.get("line_start"),
-                "line_end": hit.payload.get("line_end"),
-                # Extended metadata
-                "signature": hit.payload.get("signature"),
-                "symbol_names": hit.payload.get("symbol_names", []),
-                "imports": hit.payload.get("imports", []),
-                "language": hit.payload.get("language", "unknown"),
+                "file_path": payload.get("file_path", ""),
+                "type": payload.get("type", "unknown"),
+                "name": payload.get("name", ""),
+                "line_start": payload.get("line_start"),
+                "line_end": payload.get("line_end"),
+                "language": payload.get("language", "unknown"),
             }
-            for hit in results.points
-        ]
+            if payload.get("signature"):
+                # Signature is only present for code chunks and is short
+                item["signature"] = payload["signature"]
+            results_list.append(item)
+
+        # Glob pattern is matched client-side: Qdrant has no regex matching
+        # on keyword fields, and MatchText is token-based full-text search
+        if file_path_pattern:
+            results_list = [
+                item for item in results_list if fnmatch(item["file_path"], file_path_pattern)
+            ]
+
+        return results_list
 
     def upsert(
         self,

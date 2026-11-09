@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from .__init__ import __version__
@@ -196,7 +196,7 @@ async def _ensure_watcher_started(paths: list[str]) -> dict[str, Any]:
 
 
 @asynccontextmanager
-async def app_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+async def app_lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
     """Manage watcher lifecycle for server startup and shutdown.
 
     On startup the server attempts to enable automatic indexing for configured
@@ -224,8 +224,10 @@ async def app_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             logger.exception("Failed to stop watcher during MCP shutdown: %s", exc)
 
 
-# Initialize FastMCP server
-mcp = FastMCP("Qdrant Vector Search", json_response=True, lifespan=app_lifespan)
+# Initialize MCP server (SDK v2: MCPServer replaces FastMCP).
+# Transport options (host, port, json_response) are passed to run() instead
+# of the constructor - see __main__.py and main.py.
+mcp = MCPServer("Qdrant Vector Search", lifespan=app_lifespan)
 
 
 def get_qdrant_client() -> QdrantClientWrapper:

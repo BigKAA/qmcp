@@ -88,14 +88,16 @@ class CollectionInfo(BaseModel):
 
 
 class SearchResult(BaseModel):
-    """Single search result."""
+    """Single compact search result (pointer fields only)."""
 
     score: float
     file_path: str
-    content: str
     type: str = "unknown"
+    name: str = ""
     line_start: int | None = None
     line_end: int | None = None
+    language: str = "unknown"
+    signature: str | None = None
 
 
 class IndexResult(BaseModel):

@@ -33,11 +33,11 @@ def main():
     print(f"Transport: {transport}")
     print(f"Qdrant URL: {qdrant_url}")
 
-    # Run server
+    # Run server (MCP SDK v2: transport options go to run(), not the constructor)
     if transport == "streamable-http":
         host = os.getenv("HOST", "0.0.0.0")
         port = int(os.getenv("PORT", "8000"))
-        mcp.run(transport=transport, host=host, port=port)
+        mcp.run(transport=transport, host=host, port=port, json_response=True)
     else:
         mcp.run(transport=transport)
 
