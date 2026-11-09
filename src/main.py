@@ -20,7 +20,12 @@ import sys
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from qmcp.logging_config import get_logger
 from qmcp.server import mcp
+
+# Importing qmcp.server initializes logging (logs go to stderr, so the MCP
+# stdio protocol on stdout is never polluted).
+logger = get_logger(__name__)
 
 
 def main():
@@ -29,9 +34,7 @@ def main():
     transport = os.getenv("TRANSPORT", "stdio")
 
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-    print("Starting QDrant MCP Server")
-    print(f"Transport: {transport}")
-    print(f"Qdrant URL: {qdrant_url}")
+    logger.info("Starting QDrant MCP Server (transport=%s, qdrant_url=%s)", transport, qdrant_url)
 
     # Run server (MCP SDK v2: transport options go to run(), not the constructor)
     if transport == "streamable-http":

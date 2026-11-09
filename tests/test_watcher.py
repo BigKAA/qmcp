@@ -15,10 +15,11 @@
 """Tests for watcher module."""
 
 import asyncio
+import os
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -324,3 +325,173 @@ class TestAsyncWatcher:
         await watcher._run_callback("/path/file.py", "modified")
 
         sync_callback.assert_called_once_with("/path/file.py", "modified")
+
+    @pytest.mark.asyncio
+    async def test_start_returns_before_slow_scan(self, temp_dir, mock_callback):
+        """start() must return immediately even while the baseline scan runs.
+
+        Regression test for issue #1: scanning WATCH_PATHS used to block the
+        event loop inside start(), so the MCP client timed out on initialize.
+        """
+        watcher = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=mock_callback,
+        )
+
+        def slow_scan():
+            time.sleep(0.5)
+
+        with patch.object(watcher, "_scan_all_paths", slow_scan):
+            started_at = time.monotonic()
+            await watcher.start()
+            elapsed = time.monotonic() - started_at
+
+        try:
+            assert elapsed < 0.3
+        finally:
+            await watcher.stop()
+
+    @pytest.mark.asyncio
+    async def test_detects_created_and_modified_files(self, temp_dir, mock_callback):
+        """End-to-end: baseline first, then debounced created/modified events."""
+        existing = temp_dir / "existing.py"
+        existing.write_text("# v1")
+
+        watcher = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=mock_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.1,
+        )
+        await watcher.start()
+
+        # Wait for the baseline scan so the next file is detected as "created"
+        for _ in range(100):
+            if str(existing) in watcher._last_mtimes:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            await watcher.stop()
+            pytest.fail("Baseline scan did not complete")
+
+        # New file must be reported as created
+        new_file = temp_dir / "created.py"
+        new_file.write_text("# new")
+        await asyncio.sleep(0.6)
+
+        # Bump mtime explicitly: filesystem mtime granularity can be >= 1s,
+        # which would make a quick rewrite invisible to the watcher.
+        future = time.time() + 5
+        os.utime(existing, (future, future))
+        await asyncio.sleep(0.6)
+
+        await watcher.stop()
+
+        events = {(call.args[0], call.args[1]) for call in mock_callback.call_args_list}
+        created_paths = [path for path, event_type in events if event_type == "created"]
+
+        assert (str(new_file), "created") in events
+        assert (str(existing), "modified") in events
+        # Files already present at start are baseline, not "created"
+        assert str(existing) not in created_paths
+
+
+class TestAsyncWatcherTraversal:
+    """Tests for directory traversal and snapshot filtering (issue #1)."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        """Build a tree mixing watchable and ignored entries."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("# main")
+        (tmp_path / "src" / "README.md").write_text("# readme")
+        (tmp_path / "src" / "notes.txt").write_text("not watched")
+        (tmp_path / "src" / ".hidden.py").write_text("# hidden")
+
+        for ignored in ("node_modules", ".git", ".venv", "venv", "__pycache__", ".github"):
+            nested = tmp_path / ignored / "nested"
+            nested.mkdir(parents=True)
+            (nested / "file.py").write_text("# ignored")
+
+        return tmp_path
+
+    def test_iter_watch_files_prunes_ignored_dirs(self, tree):
+        """Traversal must skip ignored/hidden dirs and unsupported files."""
+        watcher = AsyncWatcher(paths=[str(tree)], callback=AsyncMock())
+        files = {p.relative_to(tree).as_posix() for p in watcher._iter_watch_files(tree)}
+        assert files == {"src/main.py", "src/README.md"}
+
+    def test_scan_path_skips_ignored_content(self, tree):
+        """Snapshot must not contain anything under ignored directories."""
+        watcher = AsyncWatcher(paths=[str(tree)], callback=AsyncMock())
+        watcher._scan_path(tree)
+
+        scanned = set(watcher._last_mtimes)
+        assert str(tree / "src" / "main.py") in scanned
+        assert str(tree / "src" / "README.md") in scanned
+        assert str(tree / "src" / "notes.txt") not in scanned
+        assert str(tree / "src" / ".hidden.py") not in scanned
+        assert not any("node_modules" in p for p in scanned)
+        assert not any("/.git/" in p for p in scanned)
+        assert not any("/.venv/" in p for p in scanned)
+        assert not any("__pycache__" in p for p in scanned)
+
+    def test_scan_path_handles_single_file(self, tmp_path):
+        """A watched file path yields itself; unsupported files yield nothing."""
+        py_file = tmp_path / "single.py"
+        py_file.write_text("# single")
+        txt_file = tmp_path / "single.txt"
+        txt_file.write_text("text")
+
+        watcher = AsyncWatcher(paths=[str(py_file)], callback=AsyncMock())
+        watcher._scan_path(py_file)
+        assert watcher._last_mtimes == {str(py_file): watcher._last_mtimes[str(py_file)]}
+
+        watcher._scan_path(txt_file)
+        assert str(txt_file) not in watcher._last_mtimes
+
+    def test_adapt_interval_grows_and_caps(self):
+        """Slow scans grow the interval (at least to the scan duration), capped."""
+        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=1.0)
+
+        watcher._adapt_interval(scan_duration=1.0)
+        assert watcher.current_poll_interval == 2.0
+
+        # Never below the scan duration itself
+        watcher._adapt_interval(scan_duration=5.0)
+        assert watcher.current_poll_interval == 5.0
+
+        # Capped at max_poll_interval
+        watcher._adapt_interval(scan_duration=100.0)
+        assert watcher.current_poll_interval == watcher._max_interval
+
+        # Further slow scans must not exceed the cap
+        watcher._adapt_interval(scan_duration=100.0)
+        assert watcher.current_poll_interval == watcher._max_interval
+
+    def test_adapt_interval_shrinks_back(self):
+        """Fast scans step the interval back down towards poll_interval."""
+        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=1.0)
+        watcher._interval = 8.0
+
+        watcher._adapt_interval(scan_duration=0.01)
+        assert watcher.current_poll_interval == 7.0
+
+        watcher._adapt_interval(scan_duration=0.01)
+        assert watcher.current_poll_interval == 6.0
+
+    def test_max_poll_interval_default(self):
+        """Default cap is max(poll_interval * 10, 5.0), overridable."""
+        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=1.0)
+        assert watcher._max_interval == 10.0
+
+        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=0.1)
+        assert watcher._max_interval == 5.0
+
+        watcher = AsyncWatcher(
+            paths=["/path"],
+            callback=AsyncMock(),
+            poll_interval=0.1,
+            max_poll_interval=2.0,
+        )
+        assert watcher._max_interval == 2.0

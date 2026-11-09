@@ -14,25 +14,25 @@
 
 """Entry point for running qmcp as a module: python -m qmcp"""
 
-import sys
+import os
 
 
 def main():
     """Run the MCP server."""
     # Import here to avoid issues with relative imports
-    import os
-
     os.environ.setdefault("TRANSPORT", "stdio")
 
+    from qmcp.logging_config import get_logger
     from qmcp.server import mcp
+
+    # Importing qmcp.server initializes logging (logs go to stderr, so the
+    # MCP stdio protocol on stdout is never polluted).
+    logger = get_logger(__name__)
 
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     transport = os.getenv("TRANSPORT", "stdio")
 
-    print("Starting QDrant MCP Server")
-    print(f"Transport: {transport}")
-    print(f"Qdrant URL: {qdrant_url}")
-    sys.stdout.flush()
+    logger.info("Starting QDrant MCP Server (transport=%s, qdrant_url=%s)", transport, qdrant_url)
 
     # Run server - MCPServer.run() handles stdio blocking
     mcp.run(transport=transport)

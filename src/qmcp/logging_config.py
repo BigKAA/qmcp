@@ -91,8 +91,9 @@ def setup_logging(
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # Create console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Create console handler writing to stderr. In stdio transport mode the
+    # MCP protocol owns stdout, so logs must never be written there.
+    console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(getattr(logging, level.upper()))
 
     # Set formatter based on format_type
