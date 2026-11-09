@@ -329,36 +329,44 @@ class QdrantWrapper:
 
 ## Publishing to PyPI
 
-### Prerequisites
+Publishing is fully automated via GitHub Actions **trusted publishing (OIDC)** —
+no API tokens and no `~/.pypirc` are involved. The workflow
+`.github/workflows/pypi-publish.yml` triggers on every **published GitHub Release**
+(and on manual dispatch): it runs the test suite, builds the distributions
+with hatch, checks them with twine, and publishes to PyPI via
+`pypa/gh-action-pypi-publish`.
 
-1. Store PyPI token in `~/.pypirc` (NEVER commit this file to git):
-   ```ini
-   [pypi]
-   username = __token__
-   password = pypi-your-token-here
-   ```
-
-### Build and Publish
+### Release Process
 
 ```bash
-# 1. Create build environment
-uv venv /tmp/build-venv --clear
-source /tmp/build-venv/bin/activate
+# 1. Bump the version in all places:
+#    - pyproject.toml           (version = "X.Y.Z")
+#    - src/qmcp/__init__.py     (__version__)
+#    - version badges in README.md and README.ru.md
+#    - CHANGELOG.md             (rename [Unreleased] -> [X.Y.Z] - YYYY-MM-DD)
 
-# 2. Install build tools
-uv pip install build twine hatch
+# 2. Sanity-check locally
+make test && rm -rf dist/ && uv build
 
-# 3. Build package
-hatch build wheel
+# 3. Commit, tag and push
+git commit -am "release: vX.Y.Z - <summary>"
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push && git push origin vX.Y.Z
 
-# 4. Upload to PyPI (uses ~/.pypirc config)
-twine upload wheel/* -c ~/.pypirc
+# 4. Publish the GitHub Release - this triggers the PyPI publish workflow
+gh release create vX.Y.Z --title "vX.Y.Z - <summary>" --notes "<changelog section>"
+
+# 5. Verify the run and the result
+gh run watch --workflow=pypi-publish.yml
+# PyPI page: https://pypi.org/project/qmcp-qdrant/
 ```
 
 ### Security Rules
-- **Never** store PyPI tokens in AGENTS.md, .env, or any git-tracked files
-- **Never** commit `~/.pypirc` to version control
-- Use `~/.pypirc` for local token storage
+- **Never** store PyPI tokens in AGENTS.md, .env, or any git-tracked files —
+  trusted publishing means no tokens exist anywhere
+- The PyPI project `qmcp-qdrant` has a Trusted Publisher bound to owner
+  `BigKAA`, repository `qmcp`, workflow `pypi-publish.yml`. Do not rename the
+  workflow file without updating the publisher settings on pypi.org
 
 ## Dependencies
 
