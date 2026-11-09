@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Watcher no longer blocks MCP server startup or the event loop on large `WATCH_PATHS` trees: the baseline scan and periodic re-scans run in a worker thread, ignored directories (`node_modules`, `.git`, `.venv`, hidden dirs, ...) are pruned during traversal instead of being fully scanned, and the poll interval adapts to the measured scan duration (grows up to `max_poll_interval` on slow scans) - previously the initial `rglob` scan blocked `initialize` until the client timed out (`Timed out after 30000ms`)
+- Logs and startup messages now go to stderr instead of stdout, keeping the MCP stdio protocol stream clean (`logging_config.py`, `__main__.py`, `main.py`)
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
