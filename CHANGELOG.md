@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.2] - 2026-11-10
 
 ### Added
 - Deleted files are now tracked end to end: the poll watcher detects paths missing from the snapshot and emits debounced `deleted` events, and `Indexer.delete_file` removes the file's points via a server-side `file_path` filter (`QdrantClientWrapper.delete_points_by_path`). Previously points of deleted files stayed in Qdrant forever and search kept returning pointers to files nothing could read. Atomic saves (unlink + rename) collapse into a reindex via the per-path latest-event-wins debounce, and a file recreated before processing keeps its points
