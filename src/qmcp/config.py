@@ -32,6 +32,8 @@ class Settings(BaseSettings):
         qdrant_url: URL of the Qdrant server
         qdrant_api_key: Optional API key for Qdrant authentication
         embedding_model: Model name for generating embeddings
+        embedding_threads: ONNX threads for embeddings (default min(4, CPU count))
+        index_lock_dir: Directory for cross-process index locks
         host: Server host address
         port: Server port number
         transport: MCP transport type (streamable-http, sse, etc.)
@@ -65,6 +67,23 @@ class Settings(BaseSettings):
     embedding_cache_dir: str | None = Field(
         default=None,
         description="Custom directory for embedding model cache. If not set, uses system default (/tmp/fastembed_cache)",
+    )
+    embedding_threads: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Threads used by the ONNX embedding runtime. If not set, defaults "
+            "to min(4, CPU count) so several qmcp processes can run without "
+            "saturating every core."
+        ),
+    )
+    index_lock_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory for cross-process index locks. If not set, uses "
+            "~/.cache/qmcp-locks. Locks deduplicate indexing when several "
+            "qmcp processes watch the same tree."
+        ),
     )
 
     # Server Configuration

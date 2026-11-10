@@ -395,6 +395,81 @@ class TestAsyncWatcher:
         # Files already present at start are baseline, not "created"
         assert str(existing) not in created_paths
 
+    @pytest.mark.asyncio
+    async def test_detects_deleted_files(self, temp_dir, mock_callback):
+        """Files vanishing between polls produce a debounced 'deleted' event.
+
+        Without it, points of deleted files stay in Qdrant forever and search
+        keeps returning pointers to files that no longer exist.
+        """
+        doomed = temp_dir / "doomed.py"
+        doomed.write_text("# bye")
+
+        watcher = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=mock_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.1,
+        )
+        await watcher.start()
+
+        # Wait for the baseline scan so the file is a known state
+        for _ in range(100):
+            if str(doomed) in watcher._last_mtimes:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            await watcher.stop()
+            pytest.fail("Baseline scan did not complete")
+
+        doomed.unlink()
+        await asyncio.sleep(0.6)
+        await watcher.stop()
+
+        events = {(call.args[0], call.args[1]) for call in mock_callback.call_args_list}
+        assert (str(doomed), "deleted") in events
+        # The stale entry must leave the mtime map, not linger forever
+        assert str(doomed) not in watcher._last_mtimes
+
+    @pytest.mark.asyncio
+    async def test_atomic_save_collapses_delete_and_recreate(self, temp_dir, mock_callback):
+        """Unlink + rename saves (editors do this) end in reindex, not delete.
+
+        The pending-event dict keeps only the latest event per path, so a
+        deletion immediately followed by a recreate within the debounce
+        window resolves to "created" and never drops the file's index.
+        """
+        doc = temp_dir / "doc.py"
+        doc.write_text("# v1")
+
+        watcher = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=mock_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.3,
+        )
+        await watcher.start()
+
+        for _ in range(100):
+            if str(doc) in watcher._last_mtimes:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            await watcher.stop()
+            pytest.fail("Baseline scan did not complete")
+
+        # Atomic save: write a replacement next to it, unlink the original,
+        # rename over the target - all within one debounce window.
+        replacement = temp_dir / "doc.py.tmp"
+        replacement.write_text("# v2")
+        doc.unlink()
+        replacement.rename(doc)
+        await asyncio.sleep(1.0)
+        await watcher.stop()
+
+        events = {(call.args[0], call.args[1]) for call in mock_callback.call_args_list}
+        assert (str(doc), "deleted") not in events
+
 
 class TestAsyncWatcherTraversal:
     """Tests for directory traversal and snapshot filtering (issue #1)."""

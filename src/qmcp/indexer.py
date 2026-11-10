@@ -23,6 +23,8 @@ from typing import Any
 import pathspec
 
 from .client import QdrantClientWrapper
+from .config import get_settings
+from .locking import try_singleflight
 from .logging_config import get_logger
 from .parser import find_parser
 
@@ -48,6 +50,86 @@ class Indexer:
         self.qdrant = qdrant_client
         self.batch_size = batch_size
         self.logger = get_logger(f"{__name__}.Indexer")
+        self._lock_dir = self._resolve_lock_dir()
+
+    @staticmethod
+    def _resolve_lock_dir() -> Path:
+        """Directory for cross-process index locks.
+
+        Explicit ``INDEX_LOCK_DIR`` setting wins; the default lives under the
+        user cache dir so independent qmcp processes share one lock space.
+        """
+        settings = get_settings()
+        configured = settings.index_lock_dir
+        if configured:
+            return Path(configured).expanduser()
+        return Path.home() / ".cache" / "qmcp-locks"
+
+    def index_file(self, path: str, collection: str = "code") -> dict[str, Any]:
+        """Index a single file.
+
+        Counterpart to ``index_directory`` for watch events: touching one
+        file must not walk (and hash) its whole parent directory.
+
+        Args:
+            path: File path to index
+            collection: Target collection name
+
+        Returns:
+            Indexing result with ``status`` and ``points``
+        """
+        file_path = Path(path)
+        self.logger.debug(f"Indexing single file {file_path} into collection {collection}")
+
+        if not file_path.is_file():
+            self.logger.debug(f"Watch target is not a file anymore: {path}")
+            return {"status": "skipped", "points": 0}
+
+        # Ensure collection exists (watch events may arrive before any
+        # directory-level indexing has created it).
+        if not self.qdrant.collection_exists(collection):
+            self.logger.debug(f"Creating collection {collection}")
+            self.qdrant.create_collection(collection)
+
+        return self._index_file(file_path, collection)
+
+    def delete_file(self, path: str, collection: str = "code") -> dict[str, Any]:
+        """Remove every indexed point of a file.
+
+        Counterpart to ``index_file`` for "deleted" watch events: without it,
+        points of deleted files linger in Qdrant forever and search keeps
+        returning pointers to files nothing can read.
+
+        Args:
+            path: File path whose points should be removed
+            collection: Collection to clean
+
+        Returns:
+            Result with ``status`` ("deleted" / "skipped" / "not_indexed")
+            and the number of removed ``points``
+        """
+        file_path = Path(path)
+        self.logger.debug(f"Deleting points of {file_path} from collection {collection}")
+
+        # Guard against races: if the file reappeared (atomic save, quick
+        # recreate), a create/modify event will (re)index it - deleting its
+        # live points now would drop a valid index.
+        if file_path.exists():
+            self.logger.debug(f"Watch target exists again, not deleting: {path}")
+            return {"status": "skipped", "points": 0}
+
+        existing_points = self._get_file_points(collection, str(file_path))
+        if not existing_points:
+            return {"status": "not_indexed", "points": 0}
+
+        try:
+            self.qdrant.delete_points_by_path(collection, str(file_path))
+        except Exception as e:
+            self.logger.warning(f"Failed to delete points for {file_path}: {e}")
+            return {"status": "error", "points": 0, "error": str(e)}
+
+        self.logger.info(f"Deleted {len(existing_points)} points of {file_path}")
+        return {"status": "deleted", "points": len(existing_points)}
 
     def index_directory(
         self,
@@ -190,47 +272,65 @@ class Indexer:
             if existing_hash == current_hash:
                 return {"status": "unchanged", "points": 0}
 
-            # Chunk IDs are derived from (file, name, line_start), so a changed
-            # file may produce a different chunk set (e.g. re-sectioned
-            # markdown). Delete stale points first to avoid duplicates.
-            try:
-                self.qdrant.delete_points(
-                    collection, [str(point["id"]) for point in existing_points]
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to delete stale points for {file_path}: {e}")
+        # Single-flight: several qmcp processes may watch the same tree and
+        # react to the same change. The first one embeds and uploads; the
+        # rest skip - the winner's upload is visible to everyone.
+        with try_singleflight(f"{collection}:{file_path}", self._lock_dir) as acquired:
+            if not acquired:
+                self.logger.debug(f"Skipping {file_path}: another process is indexing it")
+                return {"status": "skipped_locked", "points": 0}
 
-        # Prepare points for upsert
-        points = []
-        for chunk in chunks:
-            point = {
-                "id": str(
-                    uuid.uuid5(uuid.NAMESPACE_DNS, f"{file_path}:{chunk.name}:{chunk.line_start}")
-                ),
-                "content": chunk.content,
-                "payload": {
-                    "file_path": str(file_path),
-                    "content_hash": current_hash,
-                    "type": chunk.chunk_type,
-                    "name": chunk.name,
-                    "docstring": chunk.docstring,
-                    "line_start": chunk.line_start,
-                    "line_end": chunk.line_end,
-                    # Extended metadata for structured filtering
-                    "signature": chunk.signature,
-                    "symbol_names": chunk.symbol_names,
-                    "imports": chunk.imports,
-                    "language": chunk.language,
-                },
-            }
-            points.append(point)
+            # Re-check under the lock: the winner may have uploaded the new
+            # content while this process was waiting for the change event.
+            existing_points = self._get_file_points(collection, str(file_path))
+            if existing_points:
+                existing_hash = existing_points[0].get("payload", {}).get("content_hash", "")
+                if existing_hash == current_hash:
+                    return {"status": "unchanged", "points": 0}
 
-        # Upsert points
-        if points:
-            self.qdrant.upsert(collection, points, self.batch_size)
+                # Chunk IDs are derived from (file, name, line_start), so a changed
+                # file may produce a different chunk set (e.g. re-sectioned
+                # markdown). Delete stale points first to avoid duplicates.
+                try:
+                    self.qdrant.delete_points(
+                        collection, [str(point["id"]) for point in existing_points]
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete stale points for {file_path}: {e}")
 
-        status = "updated" if existing_points else "added"
-        return {"status": status, "points": len(points)}
+            # Prepare points for upsert
+            points = []
+            for chunk in chunks:
+                point = {
+                    "id": str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_DNS, f"{file_path}:{chunk.name}:{chunk.line_start}"
+                        )
+                    ),
+                    "content": chunk.content,
+                    "payload": {
+                        "file_path": str(file_path),
+                        "content_hash": current_hash,
+                        "type": chunk.chunk_type,
+                        "name": chunk.name,
+                        "docstring": chunk.docstring,
+                        "line_start": chunk.line_start,
+                        "line_end": chunk.line_end,
+                        # Extended metadata for structured filtering
+                        "signature": chunk.signature,
+                        "symbol_names": chunk.symbol_names,
+                        "imports": chunk.imports,
+                        "language": chunk.language,
+                    },
+                }
+                points.append(point)
+
+            # Upsert points
+            if points:
+                self.qdrant.upsert(collection, points, self.batch_size)
+
+            status = "updated" if existing_points else "added"
+            return {"status": status, "points": len(points)}
 
     def _compute_file_hash(self, file_path: Path) -> str:
         """Compute SHA256 hash of file content."""
@@ -238,11 +338,19 @@ class Indexer:
         return hashlib.sha256(content).hexdigest()
 
     def _get_file_points(self, collection: str, file_path: str) -> list[dict]:
-        """Get existing points for a file."""
-        # This is a simplified version - full implementation would
-        # use Qdrant filtering to get points for specific file
-        all_points = self.qdrant.get_all_points(collection)
-        return [p for p in all_points if p.get("payload", {}).get("file_path") == file_path]
+        """Get existing points for a file.
+
+        Delegates to the client's filtered scroll so only this file's points
+        cross the network (``get_all_points`` would download the entire
+        collection on every per-file hash check).
+        """
+        try:
+            return self.qdrant.get_file_points(collection, file_path)
+        except Exception as e:
+            # A missing collection (or transient error) must not break the
+            # indexing pass - treat the file as new.
+            self.logger.debug(f"Could not fetch points for {file_path}: {e}")
+            return []
 
     def full_reindex(
         self,

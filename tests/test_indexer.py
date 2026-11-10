@@ -31,8 +31,20 @@ def mock_client():
     client.collection_exists.return_value = False
     client.create_collection.return_value = None
     client.upsert.return_value = 1
-    client.get_all_points.return_value = []
+    client.get_file_points.return_value = []
     return client
+
+
+@pytest.fixture(autouse=True)
+def isolated_lock_dir(tmp_path, monkeypatch):
+    """Point every test Indexer at a per-test lock directory.
+
+    Keeps single-flight locks out of the developer's ~/.cache and makes
+    lock contention deterministic between tests.
+    """
+    lock_dir = tmp_path / "qmcp-locks"
+    monkeypatch.setattr(Indexer, "_resolve_lock_dir", staticmethod(lambda: lock_dir))
+    return lock_dir
 
 
 class TestIndexer:
@@ -63,7 +75,7 @@ class TestIndexer:
         )
 
         # Existing point from the previous (single-chunk) layout
-        mock_client.get_all_points.return_value = [
+        mock_client.get_file_points.return_value = [
             {"id": "old-point-id", "payload": {"file_path": str(doc), "content_hash": "a" * 64}}
         ]
 
@@ -83,8 +95,122 @@ class TestIndexer:
         doc.write_text("# Title\n\nbody\n", encoding="utf-8")
 
         current_hash = hashlib.sha256(doc.read_bytes()).hexdigest()
-        mock_client.get_all_points.return_value = [
+        mock_client.get_file_points.return_value = [
             {"id": "p1", "payload": {"file_path": str(doc), "content_hash": current_hash}}
+        ]
+
+        indexer = Indexer(mock_client)
+        result = indexer._index_file(doc, collection="docs")
+
+        assert result["status"] == "unchanged"
+        mock_client.delete_points.assert_not_called()
+        mock_client.upsert.assert_not_called()
+
+
+class TestSingleFileIndexing:
+    """Tests for watch-event driven single-file indexing."""
+
+    def test_index_file_creates_collection_and_indexes(self, mock_client, tmp_path):
+        """index_file ensures the collection exists and indexes just that file."""
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Title\n\n" + ("text " * 60) + "\n", encoding="utf-8")
+
+        indexer = Indexer(mock_client)
+        result = indexer.index_file(str(doc), collection="docs")
+
+        assert result["status"] == "added"
+        assert result["points"] >= 1
+        mock_client.collection_exists.assert_called_once_with("docs")
+        mock_client.create_collection.assert_called_once_with("docs")
+        mock_client.upsert.assert_called_once()
+
+    def test_index_file_missing_file_skipped(self, mock_client, tmp_path):
+        """Watch targets deleted between event and processing are skipped."""
+        indexer = Indexer(mock_client)
+        result = indexer.index_file(str(tmp_path / "gone.md"), collection="docs")
+
+        assert result == {"status": "skipped", "points": 0}
+        mock_client.create_collection.assert_not_called()
+        mock_client.upsert.assert_not_called()
+
+    def test_delete_file_removes_points(self, mock_client, tmp_path):
+        """delete_file removes all of a deleted file's points by path filter."""
+        gone = tmp_path / "gone.md"
+
+        mock_client.get_file_points.return_value = [
+            {"id": "p1", "payload": {"file_path": str(gone)}},
+            {"id": "p2", "payload": {"file_path": str(gone)}},
+        ]
+
+        indexer = Indexer(mock_client)
+        result = indexer.delete_file(str(gone), collection="docs")
+
+        assert result == {"status": "deleted", "points": 2}
+        mock_client.delete_points_by_path.assert_called_once_with("docs", str(gone))
+
+    def test_delete_file_skips_recreated_file(self, mock_client, tmp_path):
+        """A file that reappeared must keep its points - a create/modify
+        event will reindex it; deleting now would drop a valid index."""
+        back = tmp_path / "back.md"
+        back.write_text("# back\n", encoding="utf-8")
+
+        indexer = Indexer(mock_client)
+        result = indexer.delete_file(str(back), collection="docs")
+
+        assert result["status"] == "skipped"
+        mock_client.delete_points_by_path.assert_not_called()
+
+    def test_delete_file_not_indexed(self, mock_client, tmp_path):
+        """Deleting a file that never had points is a no-op, not an error."""
+        never = tmp_path / "never.md"
+
+        indexer = Indexer(mock_client)
+        result = indexer.delete_file(str(never), collection="docs")
+
+        assert result == {"status": "not_indexed", "points": 0}
+        mock_client.delete_points_by_path.assert_not_called()
+
+    def test_locked_file_skipped_by_second_process(self, mock_client, tmp_path):
+        """While one process holds the single-flight lock, others skip the file.
+
+        Simulates a second qmcp server watching the same tree: the lock file
+        is held externally, so this indexer must not embed or upsert.
+        """
+        fcntl = pytest.importorskip("fcntl")
+        from qmcp.locking import _lock_file_path
+
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Title\n\n" + ("text " * 60) + "\n", encoding="utf-8")
+
+        indexer = Indexer(mock_client)
+        lock_dir = indexer._lock_dir
+        lock_file = _lock_file_path(lock_dir, f"docs:{doc}")
+        lock_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(lock_file, "w") as holder:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            try:
+                result = indexer._index_file(doc, collection="docs")
+            finally:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+
+        assert result["status"] == "skipped_locked"
+        mock_client.delete_points.assert_not_called()
+        mock_client.upsert.assert_not_called()
+
+    def test_lock_recheck_skips_file_uploaded_by_winner(self, mock_client, tmp_path):
+        """Under the lock the hash is re-checked - winner's upload ends the race."""
+        import hashlib
+
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Title\n\n" + ("text " * 60) + "\n", encoding="utf-8")
+
+        current_hash = hashlib.sha256(doc.read_bytes()).hexdigest()
+        # First check (before lock): stale hash; second check (under lock):
+        # the other process already uploaded the fresh content.
+        mock_client.get_file_points.side_effect = [
+            [{"id": "p1", "payload": {"file_path": str(doc), "content_hash": "old"}}],
+            [{"id": "p1", "payload": {"file_path": str(doc), "content_hash": current_hash}}],
         ]
 
         indexer = Indexer(mock_client)

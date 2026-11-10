@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Deleted files are now tracked end to end: the poll watcher detects paths missing from the snapshot and emits debounced `deleted` events, and `Indexer.delete_file` removes the file's points via a server-side `file_path` filter (`QdrantClientWrapper.delete_points_by_path`). Previously points of deleted files stayed in Qdrant forever and search kept returning pointers to files nothing could read. Atomic saves (unlink + rename) collapse into a reindex via the per-path latest-event-wins debounce, and a file recreated before processing keeps its points
+- Lazy self-healing in `qdrant_search`: hits pointing under a watched root at a file missing from disk are dropped from the response, and their points are deleted in a fire-and-forget background task - the read path never mutates the database synchronously. Paths outside this server's watched roots are never judged (a shared Qdrant receives valid indexes from other machines); `qdrant_cleanup` remains the manual reconciliation backstop for deletions that happened while no watcher was running
+
 ### Fixed
 - The MCP `initialize` response now reports the package version in `serverInfo` (`MCPServer(version=__version__)`); it was empty before
+- Watch events now index exactly the changed file instead of re-walking and re-hashing its whole parent directory (`server.py` `_handle_watch_change` + new `Indexer.index_file`) - on busy trees this was the dominant CPU cost of every save, multiplied by each watching process
+- Per-file hash checks now fetch only that file's points via a server-side payload filter instead of downloading the entire collection for every file (`QdrantClientWrapper.get_file_points`)
+- Cross-process single-flight locking (`locking.py`, lock dir configurable via `INDEX_LOCK_DIR`, default `~/.cache/qmcp-locks`): when several qmcp processes watch the same tree, the first one embeds a changed file and the rest skip it instead of duplicating the inference; the content hash is re-checked under the lock so the winner's upload ends the race
+- ONNX embedding inference threads are now capped (`EMBEDDING_THREADS`, default `min(4, CPU count)`) - previously each qmcp process ran inference on all cores, and N client processes could saturate the machine
 
 ## [0.3.1] - 2026-11-09
 

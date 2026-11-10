@@ -14,6 +14,7 @@
 
 """Qdrant client wrapper for qmcp."""
 
+import os
 from fnmatch import fnmatch
 from typing import Any
 
@@ -47,6 +48,9 @@ class QdrantClientWrapper:
         self._client: QdrantClient | None = None
         self._embedding_model = settings.embedding_model
         self._embedding_cache_dir = settings.embedding_cache_dir
+        # Cap ONNX threads so that several qmcp processes (one per MCP
+        # client) together cannot saturate every CPU core.
+        self._embedding_threads = settings.embedding_threads
         self._embedding_model_instance: Any = None
 
     def connect(self) -> None:
@@ -98,6 +102,14 @@ class QdrantClientWrapper:
             if self._embedding_cache_dir:
                 init_kwargs["cache_dir"] = self._embedding_cache_dir
                 self.logger.info(f"Using custom model cache directory: {self._embedding_cache_dir}")
+
+            # Thread count: explicit setting wins, otherwise cap at 4 cores -
+            # inference is bursty and N processes x all cores melts laptops.
+            threads = self._embedding_threads
+            if threads is None:
+                threads = min(4, os.cpu_count() or 1)
+            init_kwargs["threads"] = threads
+            self.logger.info(f"Embedding inference threads: {threads}")
 
             self._embedding_model_instance = TextEmbedding(**init_kwargs)
 
@@ -394,6 +406,30 @@ class QdrantClientWrapper:
             points_selector=models.PointIdsList(points=point_ids),
         )
 
+    def delete_points_by_path(self, collection: str, file_path: str) -> None:
+        """Delete every point of a file, selected by payload filter.
+
+        Idempotent and cheap - no embedding involved - so several watching
+        processes may react to the same deletion without harm.
+
+        Args:
+            collection: Collection to delete from.
+            file_path: Absolute file path stored in point payloads.
+        """
+        self.client.delete(
+            collection_name=collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="file_path",
+                            match=models.MatchValue(value=file_path),
+                        )
+                    ]
+                )
+            ),
+        )
+
     def scroll(
         self,
         collection: str,
@@ -434,3 +470,42 @@ class QdrantClientWrapper:
                 break
 
         return all_points
+
+    def get_file_points(self, collection: str, file_path: str) -> list[dict[str, Any]]:
+        """Get all points of a single file, filtered server-side.
+
+        Uses a payload filter on ``file_path`` so only the file's own points
+        travel over the network - unlike ``get_all_points``, which downloads
+        the whole collection for every per-file hash check.
+
+        Args:
+            collection: Collection to query.
+            file_path: Absolute file path stored in point payloads.
+
+        Returns:
+            List of ``{"id": ..., "payload": ...}`` dicts for the file.
+        """
+        result: list[dict[str, Any]] = []
+        offset = None
+        scroll_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="file_path",
+                    match=models.MatchValue(value=file_path),
+                )
+            ]
+        )
+
+        while True:
+            hits, offset = self.client.scroll(
+                collection_name=collection,
+                limit=1000,
+                offset=offset,
+                scroll_filter=scroll_filter,
+                with_payload=True,
+            )
+            result.extend({"id": str(hit.id), "payload": hit.payload} for hit in hits)
+            if offset is None:
+                break
+
+        return result

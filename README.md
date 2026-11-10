@@ -80,13 +80,22 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 | `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
 | `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
+| `EMBEDDING_THREADS` | `min(4, CPU count)` | ONNX inference threads per process |
 | `WATCH_PATHS` | `/data/repo` | Baseline paths to watch automatically on server startup |
 | `BATCH_SIZE` | `50` | Batch size for indexing |
+| `INDEX_LOCK_DIR` | `~/.cache/qmcp-locks` | Directory for cross-process index locks |
 | `DEBOUNCE_SECONDS` | `5` | Debounce delay |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
 
 > 💡 **Model Cache**: Set `EMBEDDING_CACHE_DIR` to persist models across restarts. First launch downloads the model (~13MB), subsequent launches use cached version.
+
+> 💡 **Multiple clients, one machine**: every MCP client spawns its own qmcp
+> process, and each holds its own embedding model. qmcp deduplicates indexing
+> across processes with file locks (`INDEX_LOCK_DIR`) and caps ONNX threads
+> (`EMBEDDING_THREADS`, default 4) so N processes cannot saturate every core.
+> Keep `WATCH_PATHS` scoped to trees you actively work in - a monorepo-scale
+> path makes every process walk it on each poll.
 
 > 💡 **WATCH_PATHS examples**:
 > - Single path: `WATCH_PATHS=/home/user/project`

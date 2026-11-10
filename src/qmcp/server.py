@@ -14,6 +14,7 @@
 
 """MCP Server for Qdrant - main entry point."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -97,6 +98,12 @@ def _split_existing_watch_paths(paths: list[str]) -> tuple[list[str], list[str]]
 async def _handle_watch_change(path: str, event_type: str) -> None:
     """Handle a filesystem change event and trigger incremental indexing.
 
+    Created/modified events index exactly the changed file. Indexing its
+    parent directory here (an earlier approach) re-hashed every sibling on
+    each keystroke-debounced save, multiplied by every watching qmcp
+    process. Deleted events remove the file's points so search stops
+    returning pointers to files that no longer exist.
+
     Args:
         path: Changed filesystem path
         event_type: Type of filesystem event
@@ -107,10 +114,103 @@ async def _handle_watch_change(path: str, event_type: str) -> None:
 
     logger.info("Processing watch event '%s' for %s", event_type, path)
 
-    indexer.index_directory(
-        path=str(Path(path).parent),
+    if event_type == "deleted":
+        indexer.delete_file(path=path, collection=collection)
+        return
+
+    indexer.index_file(
+        path=path,
         collection=collection,
     )
+
+
+# Fire-and-forget deletion tasks; a module-level set keeps them alive until
+# done (asyncio only keeps weak references to running tasks).
+_stale_cleanup_tasks: set[asyncio.Task] = set()
+
+
+def _is_stale_local_hit(file_path: str, watch_roots: list[str]) -> bool:
+    """Check whether a search hit points to a locally deleted file.
+
+    Only paths under one of the watched roots are judged: the Qdrant instance
+    may be shared, and a path indexed on another machine is always "missing"
+    here - dropping or deleting those points would corrupt someone else's
+    index.
+
+    Args:
+        file_path: Absolute file path from the hit payload
+        watch_roots: Normalized absolute roots this server watches
+
+    Returns:
+        True when the file lives under a watched root but is gone from disk
+    """
+    if not file_path:
+        return False
+
+    for root in watch_roots:
+        if file_path.startswith(root.rstrip("/") + "/"):
+            return not Path(file_path).exists()
+
+    return False
+
+
+def _drop_stale_hits(results: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:
+    """Filter deleted-file hits out of search results and schedule cleanup.
+
+    Synchronous part of lazy self-healing: hits that point to files deleted
+    while no watcher was running are useless to the caller, so they never
+    reach the response; their points are removed in the background.
+
+    Args:
+        results: Raw search results
+        collection: Collection the results came from
+
+    Returns:
+        Results without stale hits
+    """
+    watch_roots = _watch_paths
+    kept: list[dict[str, Any]] = []
+    stale_paths: set[str] = set()
+
+    for item in results:
+        file_path = item.get("file_path", "")
+        if _is_stale_local_hit(file_path, watch_roots):
+            stale_paths.add(file_path)
+        else:
+            kept.append(item)
+
+    if stale_paths:
+        logger.info(
+            "Dropping %d stale hit(s) in '%s' (deleted files): %s",
+            len(stale_paths),
+            collection,
+            sorted(stale_paths),
+        )
+        _schedule_stale_cleanup(collection, sorted(stale_paths))
+
+    return kept
+
+
+def _schedule_stale_cleanup(collection: str, file_paths: list[str]) -> None:
+    """Delete points of deleted files in a background task.
+
+    Deletion runs off the search request path - a read tool must not mutate
+    the database synchronously, and the caller should not wait for it.
+
+    Args:
+        collection: Collection to clean
+        file_paths: Deleted file paths whose points should go
+    """
+
+    async def _delete_stale() -> None:
+        indexer = get_indexer()
+        for file_path in file_paths:
+            result = indexer.delete_file(file_path, collection)
+            logger.debug("Background cleanup of %s: %s", file_path, result)
+
+    task = asyncio.create_task(_delete_stale())
+    _stale_cleanup_tasks.add(task)
+    task.add_done_callback(_stale_cleanup_tasks.discard)
 
 
 async def _stop_watcher() -> None:
@@ -314,7 +414,9 @@ async def qdrant_search(
             symbol_name=symbol_name,
             language=language,
         )
-        return results
+        # Lazy self-healing: never return pointers to locally deleted files;
+        # their points are cleaned up in the background.
+        return _drop_stale_hits(results, collection)
     except QdrantConnectionError as e:
         return [{"error": str(e)}]
 

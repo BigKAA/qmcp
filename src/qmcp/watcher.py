@@ -426,6 +426,17 @@ class AsyncWatcher:
                 self._pending[file_str] = ("modified", current_time)
             self._last_mtimes[file_str] = mtime
 
+        # Detect deletions: paths present in the previous snapshot but gone
+        # from the current one. Entries leave _last_mtimes immediately so the
+        # mapping does not grow forever on churny trees, and a later recreate
+        # is reported as "created". Because _pending keeps only the latest
+        # event per path, an atomic save (unlink + rename, as editors do)
+        # collapses into a single "created"/"modified" instead of dropping
+        # the file's index.
+        for file_str in set(self._last_mtimes) - current_files.keys():
+            self._pending[file_str] = ("deleted", current_time)
+            del self._last_mtimes[file_str]
+
         # Process pending events
         to_process = []
         for file_str, (event_type, timestamp) in list(self._pending.items()):
