@@ -115,11 +115,16 @@ class TestMcpServer:
             "qmcp.server._ensure_watcher_started", new=AsyncMock(return_value={"status": "started"})
         ) as mock_ensure:
             with patch("qmcp.server._stop_watcher", new=AsyncMock()) as mock_stop:
-                async with app_lifespan(Mock()):
-                    pass
+                guard_task = Mock()
+                with patch("qmcp.server.start_orphan_guard", return_value=guard_task) as mock_guard:
+                    async with app_lifespan(Mock()):
+                        pass
 
         mock_ensure.assert_awaited_once()
         mock_stop.assert_awaited_once()
+        # The orphan guard starts with the lifespan and is cancelled on exit
+        mock_guard.assert_called_once_with(shutdown=mock_stop)
+        guard_task.cancel.assert_called_once()
 
     def test_server_identity_includes_version(self):
         """MCP initialize response must report the package version."""

@@ -30,6 +30,7 @@ from .config import get_settings
 from .diagnostics import DiagnosticsManager
 from .indexer import Indexer
 from .logging_config import get_logger, init_logging
+from .orphan import start_orphan_guard
 from .watcher import AsyncWatcher
 
 # Initialize logging
@@ -297,11 +298,12 @@ async def _ensure_watcher_started(paths: list[str]) -> dict[str, Any]:
 
 @asynccontextmanager
 async def app_lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
-    """Manage watcher lifecycle for server startup and shutdown.
+    """Manage watcher and orphan-guard lifecycle for server startup/shutdown.
 
     On startup the server attempts to enable automatic indexing for configured
     WATCH_PATHS. This is best-effort so the MCP server can still start even if
-    no valid filesystem paths are configured.
+    no valid filesystem paths are configured. The orphan guard (stdio only)
+    terminates the process once its parent client is gone.
     """
     configured_paths = _normalize_watch_paths(settings.watch_paths)
 
@@ -315,9 +317,13 @@ async def app_lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
     except Exception as exc:
         logger.exception("Failed to start watcher during MCP startup: %s", exc)
 
+    guard_task = start_orphan_guard(shutdown=_stop_watcher)
+
     try:
         yield {}
     finally:
+        if guard_task is not None:
+            guard_task.cancel()
         try:
             await _stop_watcher()
         except Exception as exc:

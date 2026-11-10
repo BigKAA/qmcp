@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Orphan self-termination for stdio servers (`orphan.py`): a background task records the parent PID at startup and exits the process (after a best-effort watcher shutdown) as soon as `os.getppid()` changes - i.e. when the MCP client died and the process was reparented to init. Unix never kills children of a dead parent, and stdin EOF is only delivered when every holder of the pipe closes it (supervisor daemons and Electron-style clients are prone to inheriting the fd), so orphaned servers could keep watching and embedding indefinitely. The guard runs only for the stdio transport; streamable-http/sse deployments under service managers are unaffected
+
 ## [0.3.2] - 2026-11-10
 
 ### Added
