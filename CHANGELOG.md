@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-11-25
+
+### Added
+- Offline regression tests using real `qdrant-client` models for both collection metadata methods
+
+### Fixed
+- Collection info, full diagnostics, and the `status://collections` resource now read dense vector dimensions from `CollectionParams.vectors` instead of the nonexistent `CollectionParams.size`; unnamed, named, sparse-only, missing, and zero-dimension configurations are handled explicitly
+- Troubleshooting examples now use the correct `name` argument for `qdrant_get_collection_info` and no longer treat `indexed_vectors_count: 0` as evidence of zero-dimensional vectors
+
 ## [0.3.3] - 2026-11-10
 
 ### Added

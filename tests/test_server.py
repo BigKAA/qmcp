@@ -69,8 +69,9 @@ class TestMcpServer:
             mock_client.get_collections.return_value = ["code"]
             mock_client.get_collection_info.return_value = {
                 "points_count": 100,
-                "vectors_count": 100,
-                "status": "green",
+                "indexed_vectors_count": 100,
+                "status": "GREEN",
+                "vector_size": 384,
             }
             mock_get_client.return_value = mock_client
 

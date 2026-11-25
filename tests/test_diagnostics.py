@@ -33,9 +33,10 @@ class TestDiagnosticsManager:
         client.collection_exists.return_value = True
         client.get_collection_info.return_value = {
             "name": "test_collection",
-            "vectors_count": 100,
             "points_count": 50,
-            "status": "green",
+            "indexed_vectors_count": 50,
+            "status": "GREEN",
+            "vector_size": 384,
         }
         client.validate_collection_vectors.return_value = {
             "collection": "test_collection",

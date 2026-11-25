@@ -13,18 +13,19 @@ This guide covers common issues with qmcp (Qdrant MCP Server) and how to resolve
 
 ## Embedding Model Issues
 
-### Symptom: `indexed_vectors_count: 0`
+### Symptom: a dense vector has zero dimensions
 
 When checking collection info, you see:
 ```json
 {
   "points_count": 79,
   "indexed_vectors_count": 0,
-  "status": "GREEN"
+  "status": "GREEN",
+  "vector_size": 0
 }
 ```
 
-Vectors exist (`points_count > 0`) but have zero dimensionality. Search returns no meaningful results, and you may see scores like `null` or errors when searching.
+A dense vector has zero dimensions, or no vectors are configured. Search returns no meaningful results, and you may see scores like `null` or errors when searching. The `indexed_vectors_count` field alone does not indicate vector dimensionality.
 
 ### Cause
 
@@ -39,9 +40,9 @@ The **fastembed** library failed to load or initialize when vectors were created
 
 1. **Check collection status**:
    ```
-   qdrant_get_collection_info(collection="your-collection")
+   qdrant_get_collection_info(name="your-collection")
    ```
-   Note: The response now includes `vector_size` - if it's 0, vectors are invalid.
+   Note: `vector_size` is an integer for an unnamed dense vector, a name-to-size object for named dense vectors, `null` for a sparse-only collection, and `0` when no vectors are configured. A dense vector with size `0` is invalid.
 
 2. **Run full diagnostics** (recommended):
    ```
@@ -258,7 +259,7 @@ This returns:
 
 1. **Check collection has vectors**:
    ```
-   qdrant_get_collection_info(collection="your-collection")
+   qdrant_get_collection_info(name="your-collection")
    ```
    - `points_count` should be > 0
 
@@ -266,8 +267,8 @@ This returns:
    ```
    qdrant_diagnose_collection(collection="your-collection")
    ```
-   - Check `indexed_vectors_count` - should equal `points_count`
-   - If `indexed_vectors_count: 0`, see [Embedding Model Issues](#embedding-model-issues)
+   - Check `vector_size` - every dense vector must have a positive size
+   - If `vector_size: 0` or any named dense vector has size `0`, see [Embedding Model Issues](#embedding-model-issues)
 
 3. **Test with generic query**:
    ```
@@ -279,7 +280,7 @@ This returns:
 | Cause | Diagnosis | Solution |
 |-------|-----------|----------|
 | Empty collection | `points_count: 0` | Run `qdrant_index_directory` |
-| Zero-dim vectors | `indexed_vectors_count: 0` | Reindex (see above) |
+| Zero-dim vectors | `vector_size: 0` or a named dense size of `0` | Reindex (see above) |
 | Score threshold too high | Results filtered out | Lower `score_threshold` to 0.5 |
 | Wrong collection | Wrong project | Check `collection` parameter |
 | File not indexed | File missing from diagnose | Reindex project |
@@ -349,7 +350,7 @@ Run these to gather information for troubleshooting:
 qdrant_get_status()
 
 # 2. Collection info
-qdrant_get_collection_info(collection="your-collection")
+qdrant_get_collection_info(name="your-collection")
 
 # 3. Full diagnostics
 qdrant_diagnose_collection(collection="your-collection")

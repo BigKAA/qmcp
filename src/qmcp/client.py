@@ -207,15 +207,39 @@ class QdrantClientWrapper:
         """Check if collection exists."""
         return name in self.get_collections()
 
+    @staticmethod
+    def _get_vector_size(params: models.CollectionParams | None) -> int | dict[str, int] | None:
+        """Extract dense vector dimensions from a collection configuration.
+
+        Args:
+            params: Collection parameters returned by Qdrant, if available
+
+        Returns:
+            Size for an unnamed dense vector, a name-to-size mapping for named dense
+            vectors, None for a sparse-only collection, or 0 when no vectors exist
+        """
+        if params is None:
+            return 0
+
+        vectors = params.vectors
+        if isinstance(vectors, models.VectorParams):
+            return vectors.size
+        if isinstance(vectors, dict) and vectors:
+            return {name: vector.size for name, vector in vectors.items()}
+        if params.sparse_vectors:
+            return None
+        return 0
+
     def get_collection_info(self, name: str) -> dict[str, Any]:
         """Get collection information."""
         info = self.client.get_collection(collection_name=name)
+        params = info.config.params if info.config else None
         return {
             "name": name,
             "points_count": info.points_count,
             "indexed_vectors_count": info.indexed_vectors_count,
             "status": info.status.name,
-            "vector_size": info.config.params.size if info.config and info.config.params else 0,
+            "vector_size": self._get_vector_size(params),
         }
 
     def validate_collection_vectors(self, name: str) -> dict[str, Any]:
@@ -224,20 +248,34 @@ class QdrantClientWrapper:
         Returns diagnostic info about the collection vector health.
         """
         info = self.client.get_collection(collection_name=name)
-        vector_size = info.config.params.size if info.config and info.config.params else 0
+        params = info.config.params if info.config else None
+        vector_size = self._get_vector_size(params)
+
+        if isinstance(vector_size, dict):
+            is_valid = all(size > 0 for size in vector_size.values())
+        elif vector_size is None:
+            is_valid = True
+        else:
+            is_valid = vector_size > 0
+
+        warning = None
+        if not is_valid:
+            if params is None or (not params.vectors and not params.sparse_vectors):
+                warning = f"No dense or sparse vectors configured for collection '{name}'."
+            else:
+                warning = (
+                    f"Vectors have zero dimensions! "
+                    f"This usually means fastembed failed during indexing. "
+                    f"Run: qdrant_reindex(collection='{name}', "
+                    f"path='/path/to/project', mode='full')"
+                )
 
         return {
             "collection": name,
             "points_count": info.points_count,
             "vector_size": vector_size,
-            "is_valid": vector_size > 0,
-            "warning": (
-                f"Vectors have zero dimensions! "
-                f"This usually means fastembed failed during indexing. "
-                f"Run: qdrant_reindex(collection='{name}', path='/path/to/project', mode='full')"
-            )
-            if vector_size == 0
-            else None,
+            "is_valid": is_valid,
+            "warning": warning,
         }
 
     def search(
