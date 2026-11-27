@@ -15,6 +15,7 @@
 """MCP Server for Qdrant - main entry point."""
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,8 +30,9 @@ from .client import QdrantClientWrapper, QdrantConnectionError
 from .config import get_settings
 from .diagnostics import DiagnosticsManager
 from .indexer import Indexer
+from .locking import resolve_lock_dir
 from .logging_config import get_logger, init_logging
-from .orphan import start_orphan_guard
+from .orphan import start_idle_guard, start_orphan_guard, start_replacement_guard
 from .watcher import AsyncWatcher
 
 # Initialize logging
@@ -47,6 +49,45 @@ _indexer: Indexer | None = None
 _cleanup_manager: CleanupManager | None = None
 _watcher: AsyncWatcher | None = None
 _watch_paths: list[str] = settings.watch_paths
+
+# Client-activity tracking, the liveness signal for the stdio self-termination
+# guards (see qmcp.orphan). One monotonic timestamp plus two in-flight
+# counters; everything runs on the single event loop, so no locking needed.
+_last_activity_monotonic: float = time.monotonic()
+_active_requests: int = 0
+_indexing_in_progress: int = 0
+
+
+class _ActivityMiddleware:
+    """MCP middleware recording every inbound message as client activity.
+
+    Wraps all requests and notifications (initialize, pings, tool calls...),
+    so even a silent-but-alive connection keeps the idle guard at bay, while
+    an abandoned one (no messages at all) lets the server exit. Also counts
+    in-flight requests so a long tool call is never mistaken for idleness.
+    """
+
+    async def __call__(self, ctx, call_next):  # noqa: ANN001 - SDK protocol types
+        global _last_activity_monotonic, _active_requests
+        _last_activity_monotonic = time.monotonic()
+        _active_requests += 1
+        try:
+            return await call_next(ctx)
+        finally:
+            _active_requests -= 1
+
+
+def _idle_seconds() -> float:
+    """Seconds since the last inbound MCP message."""
+    return time.monotonic() - _last_activity_monotonic
+
+
+def _is_active() -> bool:
+    """Whether a client request or an indexing task is in flight.
+
+    The idle guard must never cut short work it observes as silence.
+    """
+    return _active_requests > 0 or _indexing_in_progress > 0
 
 
 def _normalize_watch_paths(paths: list[str]) -> list[str]:
@@ -115,14 +156,19 @@ async def _handle_watch_change(path: str, event_type: str) -> None:
 
     logger.info("Processing watch event '%s' for %s", event_type, path)
 
-    if event_type == "deleted":
-        indexer.delete_file(path=path, collection=collection)
-        return
+    global _indexing_in_progress
+    _indexing_in_progress += 1
+    try:
+        if event_type == "deleted":
+            indexer.delete_file(path=path, collection=collection)
+            return
 
-    indexer.index_file(
-        path=path,
-        collection=collection,
-    )
+        indexer.index_file(
+            path=path,
+            collection=collection,
+        )
+    finally:
+        _indexing_in_progress -= 1
 
 
 # Fire-and-forget deletion tasks; a module-level set keeps them alive until
@@ -204,10 +250,15 @@ def _schedule_stale_cleanup(collection: str, file_paths: list[str]) -> None:
     """
 
     async def _delete_stale() -> None:
-        indexer = get_indexer()
-        for file_path in file_paths:
-            result = indexer.delete_file(file_path, collection)
-            logger.debug("Background cleanup of %s: %s", file_path, result)
+        global _indexing_in_progress
+        _indexing_in_progress += 1
+        try:
+            indexer = get_indexer()
+            for file_path in file_paths:
+                result = indexer.delete_file(file_path, collection)
+                logger.debug("Background cleanup of %s: %s", file_path, result)
+        finally:
+            _indexing_in_progress -= 1
 
     task = asyncio.create_task(_delete_stale())
     _stale_cleanup_tasks.add(task)
@@ -254,6 +305,7 @@ async def _start_watcher(paths: list[str]) -> dict[str, Any]:
         valid_paths,
         _handle_watch_change,
         debounce_seconds=settings.debounce_seconds,
+        lock_dir=resolve_lock_dir(),
     )
     await _watcher.start()
     _watch_paths = valid_paths
@@ -296,34 +348,78 @@ async def _ensure_watcher_started(paths: list[str]) -> dict[str, Any]:
     return result
 
 
+def _resolve_watch_autostart() -> bool:
+    """Decide whether the watcher starts with the server process.
+
+    Policy (CPU overheat incident, 2026-11-27): a shared HTTP daemon is the
+    single machine-wide indexer, so it must start watching immediately; a
+    per-connection stdio server must not - every client would spawn its own
+    poller - so stdio instances enable watching explicitly via
+    ``qdrant_watch_ensure`` (the documented agent workflow). The
+    ``WATCH_AUTOSTART`` setting overrides the policy in either direction.
+
+    Returns:
+        Whether to start the watcher for configured WATCH_PATHS on startup.
+    """
+    if settings.watch_autostart is not None:
+        return settings.watch_autostart
+    return settings.transport != "stdio"
+
+
 @asynccontextmanager
 async def app_lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
-    """Manage watcher and orphan-guard lifecycle for server startup/shutdown.
+    """Manage watcher and self-termination-guard lifecycle.
 
     On startup the server attempts to enable automatic indexing for configured
-    WATCH_PATHS. This is best-effort so the MCP server can still start even if
-    no valid filesystem paths are configured. The orphan guard (stdio only)
-    terminates the process once its parent client is gone.
-    """
-    configured_paths = _normalize_watch_paths(settings.watch_paths)
+    WATCH_PATHS - for stdio transports only when WATCH_AUTOSTART forces it
+    (see ``_resolve_watch_autostart``). This is best-effort so the MCP server
+    can still start even if no valid filesystem paths are configured.
 
-    try:
-        startup_result = await _ensure_watcher_started(configured_paths)
-        if startup_result["status"] == "skipped":
-            logger.warning(
-                "Automatic indexing was not enabled on startup. Invalid watch paths: %s",
-                startup_result.get("skipped_paths", []),
-            )
-    except Exception as exc:
-        logger.exception("Failed to start watcher during MCP startup: %s", exc)
+    The stdio self-termination guards (see qmcp.orphan) bound the server's
+    lifetime: the process exits when the parent client dies (orphan), when
+    the connection has been silent past the idle timeout, or when a newer
+    sibling from the same client has replaced it. Under HTTP transports the
+    daemon's lifetime belongs to its service manager, so the guards stay off.
+    """
+    if _resolve_watch_autostart():
+        configured_paths = _normalize_watch_paths(settings.watch_paths)
+
+        try:
+            startup_result = await _ensure_watcher_started(configured_paths)
+            if startup_result["status"] == "skipped":
+                logger.warning(
+                    "Automatic indexing was not enabled on startup. Invalid watch paths: %s",
+                    startup_result.get("skipped_paths", []),
+                )
+        except Exception as exc:
+            logger.exception("Failed to start watcher during MCP startup: %s", exc)
+    else:
+        logger.info(
+            "Watcher autostart disabled for transport=%s; call qdrant_watch_ensure "
+            "to enable watching for a workspace",
+            settings.transport,
+        )
 
     guard_task = start_orphan_guard(shutdown=_stop_watcher)
+    idle_task = start_idle_guard(
+        shutdown=_stop_watcher,
+        timeout_seconds=settings.idle_timeout_seconds,
+        idle_seconds=_idle_seconds,
+        is_active=_is_active,
+    )
+    replacement_task = start_replacement_guard(
+        shutdown=_stop_watcher,
+        registry_dir=resolve_lock_dir(),
+        grace_seconds=settings.replacement_grace_seconds,
+        idle_seconds=_idle_seconds,
+    )
 
     try:
         yield {}
     finally:
-        if guard_task is not None:
-            guard_task.cancel()
+        for task in (guard_task, idle_task, replacement_task):
+            if task is not None:
+                task.cancel()
         try:
             await _stop_watcher()
         except Exception as exc:
@@ -334,7 +430,14 @@ async def app_lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
 # Transport options (host, port, json_response) are passed to run() instead
 # of the constructor - see __main__.py and main.py.
 # version= populates serverInfo in the initialize response.
-mcp = MCPServer("Qdrant Vector Search", version=__version__, lifespan=app_lifespan)
+# middleware= records every inbound message as client activity for the
+# stdio idle/replacement guards.
+mcp = MCPServer(
+    "Qdrant Vector Search",
+    version=__version__,
+    lifespan=app_lifespan,
+    middleware=(_ActivityMiddleware(),),
+)
 
 
 def get_qdrant_client() -> QdrantClientWrapper:
@@ -612,6 +715,7 @@ async def qdrant_get_status() -> dict[str, Any]:
             "qdrant_connected": client.is_connected,
             "collections": collections,
             "watcher_active": _watcher.is_running if _watcher else False,
+            "watcher_role": _watcher.role if _watcher else None,
             "watched_paths": _watch_paths,
             "configured_watch_paths": _normalize_watch_paths(settings.watch_paths),
         }
@@ -622,6 +726,7 @@ async def qdrant_get_status() -> dict[str, Any]:
             "qdrant_connected": False,
             "collections": [],
             "watcher_active": False,
+            "watcher_role": None,
             "watched_paths": [],
             "configured_watch_paths": _normalize_watch_paths(settings.watch_paths),
         }

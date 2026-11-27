@@ -15,6 +15,7 @@
 """Entry point for running qmcp as a module: python -m qmcp"""
 
 import os
+import sys
 
 
 def main():
@@ -34,8 +35,23 @@ def main():
 
     logger.info("Starting QDrant MCP Server (transport=%s, qdrant_url=%s)", transport, qdrant_url)
 
-    # Run server - MCPServer.run() handles stdio blocking
-    mcp.run(transport=transport)
+    # Run server - MCPServer.run() handles stdio blocking. HTTP transports
+    # honor HOST/PORT the same way src/main.py does (used by launchd/systemd
+    # daemons started via the qmcp-qdrant console script).
+    if transport == "streamable-http":
+        host = os.getenv("HOST", "0.0.0.0")
+        port = int(os.getenv("PORT", "8000"))
+        mcp.run(transport=transport, host=host, port=port, json_response=True)
+    else:
+        mcp.run(transport=transport)
+
+    # run() returning means the client disconnected and the lifespan already
+    # cleaned up. Lingering non-daemon threads (thread pool workers, native
+    # runtimes) must not keep a dead connection's process alive: exit hard
+    # instead of falling through to interpreter shutdown.
+    logger.info("MCP server stopped; exiting")
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

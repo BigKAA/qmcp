@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-[![Version](https://img.shields.io/badge/version-0.3.4-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Version](https://img.shields.io/badge/version-0.3.5-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -78,12 +78,17 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 |---------------------|---------|-------------|
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_API_KEY` | (none) | Qdrant API key (optional) |
+| `TRANSPORT` | `stdio` | MCP transport: `stdio`, `streamable-http`, `sse` |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address for HTTP transports |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model |
 | `EMBEDDING_CACHE_DIR` | (system temp) | Custom directory for model cache |
 | `EMBEDDING_THREADS` | `min(4, CPU count)` | ONNX inference threads per process |
-| `WATCH_PATHS` | `/data/repo` | Baseline paths to watch automatically on server startup |
+| `WATCH_PATHS` | `/data/repo` | Baseline paths to watch on startup (HTTP transports only, see `WATCH_AUTOSTART`) |
+| `WATCH_AUTOSTART` | `auto` | Start the watcher on server startup. `auto`: on for HTTP transports, off for stdio; `true`/`false` overrides |
+| `IDLE_TIMEOUT_SECONDS` | `1800` | Shut down an idle stdio server after this many seconds without MCP traffic; the client respawns it on the next call. `0` disables |
+| `REPLACEMENT_GRACE_SECONDS` | `300` | Idle period that must pass before a stdio server replaced by a newer sibling exits |
 | `BATCH_SIZE` | `50` | Batch size for indexing |
-| `INDEX_LOCK_DIR` | `~/.cache/qmcp-locks` | Directory for cross-process index locks |
+| `INDEX_LOCK_DIR` | `~/.cache/qmcp-locks` | Directory for cross-process locks and the stdio instance registry |
 | `DEBOUNCE_SECONDS` | `5` | Debounce delay |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
@@ -92,10 +97,11 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 
 > 💡 **Multiple clients, one machine**: every MCP client spawns its own qmcp
 > process, and each holds its own embedding model. qmcp deduplicates indexing
-> across processes with file locks (`INDEX_LOCK_DIR`) and caps ONNX threads
-> (`EMBEDDING_THREADS`, default 4) so N processes cannot saturate every core.
-> Keep `WATCH_PATHS` scoped to trees you actively work in - a monorepo-scale
-> path makes every process walk it on each poll.
+> across processes with file locks (`INDEX_LOCK_DIR`), elects a single
+> machine-wide watcher leader (see [Process Lifecycle](#process-lifecycle-and-resource-hygiene)),
+> and caps ONNX threads (`EMBEDDING_THREADS`, default 4) so N processes cannot
+> saturate every core. Keep `WATCH_PATHS` scoped to trees you actively work in -
+> a monorepo-scale path makes every process walk it on each poll.
 
 > 💡 **WATCH_PATHS examples**:
 > - Single path: `WATCH_PATHS=/home/user/project`
@@ -171,10 +177,10 @@ The default `score_threshold=0.7` is calibrated for `bge-*` embedding models. Fo
 
 `qmcp` supports automatic indexing on two levels:
 
-1. **Server startup level** — on MCP startup, the server automatically tries to start a watcher for `WATCH_PATHS`.
-2. **Workspace session level** — because one global MCP server can be shared across multiple repositories, agents should check the watcher state for the current workspace and call `qdrant_watch_ensure(paths=[workspace_root])` when the workspace path is missing.
+1. **Server startup level (HTTP daemon)** — a shared `streamable-http` daemon starts a watcher for `WATCH_PATHS` on startup, because it is the single machine-wide indexer. A per-connection stdio server does **not** autostart a watcher (N clients would mean N filesystem pollers); override with `WATCH_AUTOSTART=true`.
+2. **Workspace session level** — agents check the watcher state for the current workspace and call `qdrant_watch_ensure(paths=[workspace_root])` when the workspace path is missing. For stdio servers this is the primary way watching gets enabled.
 
-Recommended OpenCode flow for every new workspace:
+Recommended flow for every new workspace:
 
 ```python
 status = qdrant_get_status()
@@ -184,7 +190,137 @@ status = qdrant_get_status()
 qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 ```
 
-`qdrant_watch_ensure` merges the current workspace with already watched paths and `WATCH_PATHS`, making it safe for a single global MCP shared by multiple projects.
+`qdrant_watch_ensure` merges the current workspace with already watched paths and `WATCH_PATHS`, making it safe for a single global MCP shared by multiple projects. When several qmcp processes watch the same paths, a cross-process leader lock ensures exactly one of them polls the filesystem; the rest idle in standby (`watcher_role` in `qdrant_get_status` shows `leader`/`standby`) and are promoted automatically when the leader dies.
+
+## Process Lifecycle and Resource Hygiene
+
+A stdio MCP server is spawned per client connection, and clients do not always
+clean up: an abandoned connection delivers no EOF when the terminal or
+supervisor inherited the pipe fd, and a *living* parent that reconnects leaves
+the old copy running. Accumulated copies each held an embedding model and a
+filesystem poller (the 2026-11 CPU overheat incident: 7 concurrent copies,
+~126% CPU, 15 GB of memory pressure). stdio servers now bound their own
+lifetime with three guards (all disabled for `streamable-http`/`sse`, whose
+lifetime belongs to the service manager):
+
+| Guard | Trigger | Default |
+|---|---|---|
+| Orphan | Parent process died (`os.getppid()` changed) | always on |
+| Idle | No inbound MCP traffic for `IDLE_TIMEOUT_SECONDS` | 1800 s (`0` disables) |
+| Replacement | A newer instance from the same client registered, and this one idle for `REPLACEMENT_GRACE_SECONDS` | 300 s grace |
+
+Details:
+
+- Activity is recorded by an MCP middleware wrapping **every** inbound message
+  (handshake, pings, tool calls), so a silent-but-alive connection stays
+  alive, while an abandoned one (no messages at all) lets the server exit;
+  in-flight requests and indexing tasks postpone the exit.
+- Clients respawn their server on the next tool call, so an idle exit is
+  invisible in normal use.
+- After `run()` returns (client disconnected), the entry points hard-exit the
+  process so no lingering thread can keep a dead connection alive.
+- The watcher is single-instance machine-wide (leader lock in
+  `INDEX_LOCK_DIR`), so even leftover copies cannot multiply the polling cost.
+
+Diagnostics and manual cleanup of pre-0.3.5 leftovers:
+
+```bash
+# find running copies
+ps -eo pid,ppid,%cpu,etime,command | grep -E 'qmcp(-qdrant)?' | grep -v grep
+
+# reap them (active clients respawn on the next call)
+kill <PID...>
+```
+
+## Deployment: Shared HTTP Daemon (Recommended for Multi-Client Workstations)
+
+With stdio every MCP client (OpenCode, Zed, ZCode, CLI agents) spawns its own
+qmcp process - per-connection processes by design, which is what the guards
+above keep hygienic. For a workstation with several MCP clients the
+recommended alternative is **one shared `streamable-http` daemon**: one
+process, one embedding model, one watcher, and no per-connection processes to
+orphan at all.
+
+```bash
+TRANSPORT=streamable-http HOST=127.0.0.1 PORT=8000 \
+WATCH_PATHS=/Users/me/projects,/Users/me/docs \
+qmcp-qdrant
+```
+
+Clients then connect by URL instead of a command (OpenCode example):
+
+```json
+{
+  "mcp": {
+    "qmcp-qdrant": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+### macOS: launchd
+
+`~/Library/LaunchAgents/com.qmcp.qdrant.plist` - starts on login, restarts on
+crash, logs to `~/Library/Logs/qmcp.log`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.qmcp.qdrant</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/me/.local/bin/qmcp-qdrant</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TRANSPORT</key><string>streamable-http</string>
+    <key>HOST</key><string>127.0.0.1</string>
+    <key>PORT</key><string>8000</string>
+    <key>QDRANT_URL</key><string>http://192.168.218.190:6333</string>
+    <key>WATCH_PATHS</key><string>/Users/me/projects,/Users/me/docs</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/Users/me/Library/Logs/qmcp.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.qmcp.qdrant.plist
+```
+
+### Linux: systemd (user unit)
+
+`~/.config/systemd/user/qmcp.service`:
+
+```ini
+[Unit]
+Description=qmcp - Qdrant MCP server (shared daemon)
+
+[Service]
+Environment=TRANSPORT=streamable-http
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
+Environment=WATCH_PATHS=/home/me/projects,/home/me/docs
+ExecStart=/home/me/.local/bin/qmcp-qdrant
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now qmcp
+```
+
+> ⚠️ **Security**: bind to `127.0.0.1` - the daemon has no authentication and
+> anyone who can reach the port can search and modify your indexes.
 
 ## MCP Tools
 

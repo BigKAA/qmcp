@@ -570,3 +570,165 @@ class TestAsyncWatcherTraversal:
             max_poll_interval=2.0,
         )
         assert watcher._max_interval == 2.0
+
+
+class TestAsyncWatcherLeaderElection:
+    """Tests for the cross-process watcher leader election (standby mode)."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def lock_dir(self, tmp_path):
+        """Create an isolated lock directory per test."""
+        return tmp_path / "locks"
+
+    @pytest.mark.asyncio
+    async def test_solo_role_without_lock_dir(self, temp_dir):
+        """Without a lock directory the watcher runs as the only instance."""
+        watcher = AsyncWatcher(paths=[str(temp_dir)], callback=AsyncMock())
+
+        assert watcher.role == "solo"
+        assert watcher._leader_lock is None
+
+    @pytest.mark.asyncio
+    async def test_first_instance_becomes_leader(self, temp_dir, lock_dir):
+        """The uncontended watcher acquires leadership and polls."""
+        leader_callback = AsyncMock()
+        (temp_dir / "solo.py").write_text("x = 1\n")
+        watcher = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=leader_callback,
+            poll_interval=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        await watcher.start()
+
+        await asyncio.sleep(0.3)
+
+        assert watcher.role == "leader"
+        assert watcher.is_polling is True
+
+        await watcher.stop()
+
+    @pytest.mark.asyncio
+    async def test_second_instance_stays_standby(self, temp_dir, lock_dir):
+        """A second watcher over the same paths never scans or fires."""
+        leader_callback = AsyncMock()
+        standby_callback = AsyncMock()
+        (temp_dir / "solo.py").write_text("x = 1\n")
+        leader = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=leader_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        standby = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=standby_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        await leader.start()
+        await asyncio.sleep(0.1)  # let the leader win the lock first
+        await standby.start()
+
+        # Change a file while both watch: only the leader reacts
+        await asyncio.sleep(0.1)
+        (temp_dir / "new.py").write_text("y = 2\n")
+        await asyncio.sleep(0.3)
+
+        assert leader.role == "leader"
+        assert standby.role == "standby"
+        assert standby.is_running is True
+        assert standby.is_polling is False
+        # The standby itself never fired a callback; the leader did
+        assert standby_callback.await_count == 0
+        assert leader_callback.await_count > 0
+
+        await leader.stop()
+        await standby.stop()
+
+    @pytest.mark.asyncio
+    async def test_standby_promoted_after_leader_death(self, temp_dir, lock_dir):
+        """When the leader stops, a standby takes over automatically."""
+        leader_callback = AsyncMock()
+        standby_callback = AsyncMock()
+        (temp_dir / "solo.py").write_text("x = 1\n")
+        leader = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=leader_callback,
+            poll_interval=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        standby = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=standby_callback,
+            poll_interval=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        await leader.start()
+        await asyncio.sleep(0.1)
+        await standby.start()
+        await asyncio.sleep(0.05)
+        assert standby.role == "standby"
+
+        await leader.stop()
+        await asyncio.sleep(0.3)
+
+        assert standby.role == "leader"
+        assert standby.is_polling is True
+
+        await standby.stop()
+
+    @pytest.mark.asyncio
+    async def test_promotion_does_not_replay_existing_tree(self, temp_dir, lock_dir):
+        """A newly promoted standby baselines quietly - no event storm.
+
+        A standby that leads for the first time has no snapshot memory; on
+        promotion it must treat the current tree as the baseline instead of
+        flooding the indexer with "created" events for every existing file.
+        """
+        leader_callback = AsyncMock()
+        standby_callback = AsyncMock()
+        for i in range(5):
+            (temp_dir / f"solo{i}.py").write_text("x = 1\n")
+        leader = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=leader_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        standby = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=standby_callback,
+            poll_interval=0.05,
+            debounce_seconds=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        await leader.start()
+        await asyncio.sleep(0.1)
+        await standby.start()
+        await asyncio.sleep(0.05)
+
+        await leader.stop()
+        await asyncio.sleep(0.4)  # promotion + a few poll cycles
+
+        assert standby.role == "leader"
+        # Nothing changed since the standby's baseline: total silence
+        assert standby_callback.await_count == 0
+
+        await standby.stop()

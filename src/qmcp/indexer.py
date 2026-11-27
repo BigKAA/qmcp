@@ -23,8 +23,7 @@ from typing import Any
 import pathspec
 
 from .client import QdrantClientWrapper
-from .config import get_settings
-from .locking import try_singleflight
+from .locking import resolve_lock_dir, try_singleflight
 from .logging_config import get_logger
 from .parser import find_parser
 
@@ -50,20 +49,17 @@ class Indexer:
         self.qdrant = qdrant_client
         self.batch_size = batch_size
         self.logger = get_logger(f"{__name__}.Indexer")
-        self._lock_dir = self._resolve_lock_dir()
+        self._lock_dir = resolve_lock_dir()
 
     @staticmethod
     def _resolve_lock_dir() -> Path:
         """Directory for cross-process index locks.
 
-        Explicit ``INDEX_LOCK_DIR`` setting wins; the default lives under the
-        user cache dir so independent qmcp processes share one lock space.
+        Kept as a thin alias for backwards compatibility; the canonical
+        implementation moved to :func:`qmcp.locking.resolve_lock_dir` so the
+        watcher and lifecycle guards share the same directory.
         """
-        settings = get_settings()
-        configured = settings.index_lock_dir
-        if configured:
-            return Path(configured).expanduser()
-        return Path.home() / ".cache" / "qmcp-locks"
+        return resolve_lock_dir()
 
     def index_file(self, path: str, collection: str = "code") -> dict[str, Any]:
         """Index a single file.

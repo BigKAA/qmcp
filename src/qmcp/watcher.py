@@ -27,6 +27,7 @@ from watchdog.events import (
 )
 from watchdog.observers import Observer
 
+from .locking import LeaderLock
 from .logging_config import get_logger
 
 # Directory names that are never worth watching for code changes. They are
@@ -223,6 +224,12 @@ class AsyncWatcher:
     - The poll interval adapts to the measured scan duration: slow scans
       grow the interval (up to ``max_poll_interval``), fast scans shrink
       it back towards ``poll_interval``.
+
+    Leader election (CPU overheat incident, 2026-11-27): when ``lock_dir``
+    is set, exactly one qmcp process machine-wide polls this watch set.
+    Every watcher instance runs, but non-leaders idle in standby - they
+    neither walk the tree nor burn CPU - and one of them is promoted
+    automatically when the current leader dies (the OS drops its flock).
     """
 
     def __init__(
@@ -232,6 +239,8 @@ class AsyncWatcher:
         poll_interval: float = 1.0,
         debounce_seconds: float = 5.0,
         max_poll_interval: float | None = None,
+        lock_dir: Path | None = None,
+        standby_interval: float = 5.0,
     ):
         """Initialize async watcher.
 
@@ -244,6 +253,11 @@ class AsyncWatcher:
             debounce_seconds: Debounce delay
             max_poll_interval: Upper bound for the adaptive poll interval.
                 Defaults to ``max(poll_interval * 10, 5.0)``.
+            lock_dir: Directory for the cross-process leader lock. When set,
+                polling is single-instance machine-wide (see class docs).
+                ``None`` disables leader election (tests, embeds).
+            standby_interval: Delay between leader-lock attempts while in
+                standby.
         """
         self.logger = get_logger(f"{__name__}.AsyncWatcher")
         self.paths = [Path(p) for p in paths]
@@ -257,10 +271,26 @@ class AsyncWatcher:
         )
         self._interval = poll_interval
 
+        self._lock_dir = lock_dir
+        self._standby_interval = standby_interval
+        self._leader_lock: LeaderLock | None = (
+            LeaderLock(self._leader_key(), lock_dir) if lock_dir is not None else None
+        )
+        self._role = "solo" if lock_dir is None else "standby"
+
         self._running = False
         self._task: asyncio.Task | None = None
         self._last_mtimes: dict[str, float] = {}
         self._pending: dict[str, tuple[str, float]] = {}
+
+    def _leader_key(self) -> str:
+        """Build the cross-process leader key for this watch set.
+
+        Returns:
+            Lock key stable across processes watching the same paths.
+        """
+        joined = ",".join(sorted(str(p) for p in self.paths))
+        return f"watcher:{joined}"
 
     async def start(self):
         """Start watching.
@@ -275,7 +305,7 @@ class AsyncWatcher:
 
         self._running = True
         self._task = asyncio.create_task(self._run())
-        self.logger.info(f"Started async watching {len(self.paths)} paths")
+        self.logger.info(f"Started async watching {len(self.paths)} paths (role={self._role})")
 
     async def stop(self):
         """Stop watching."""
@@ -286,12 +316,39 @@ class AsyncWatcher:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        if self._leader_lock is not None:
+            self._leader_lock.release()
         self.logger.info("Stopped async watching")
 
     async def _run(self):
-        """Build the baseline snapshot off the event loop, then poll."""
-        await asyncio.to_thread(self._scan_all_paths)
-        await self._poll_loop()
+        """Build the baseline snapshot off the event loop, then poll.
+
+        With leader election enabled, first contend for the leader lock:
+        only the winner scans/polls; standbys wait for promotion (which
+        happens by themselves when the leader process dies).
+        """
+        if self._leader_lock is None:
+            await asyncio.to_thread(self._scan_all_paths)
+            await self._poll_loop()
+            return
+
+        while self._running:
+            if not self._leader_lock.acquire():
+                self._role = "standby"
+                await asyncio.sleep(self._standby_interval)
+                continue
+
+            self._role = "leader"
+            self.logger.info("Won watcher leader lock - this process polls the filesystem")
+            try:
+                # Baseline only on first leadership: afterwards _last_mtimes
+                # holds the previous era's snapshot, and the first poll diff
+                # replays everything that changed while we were in standby.
+                if not self._last_mtimes:
+                    await asyncio.to_thread(self._scan_all_paths)
+                await self._poll_loop()
+            finally:
+                self._leader_lock.release()
 
     def _scan_all_paths(self) -> None:
         """Snapshot mtimes for every watched path (runs in a worker thread)."""
@@ -476,6 +533,27 @@ class AsyncWatcher:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def role(self) -> str:
+        """This watcher's role in leader election.
+
+        Returns:
+            ``"leader"`` while this process holds the lock and polls,
+            ``"standby"`` while another process leads,
+            ``"solo"`` when leader election is disabled.
+        """
+        return self._role
+
+    @property
+    def is_polling(self) -> bool:
+        """Whether this instance actively scans the filesystem right now.
+
+        Distinct from ``is_running``: a standby watcher runs (its task is
+        alive, it waits for promotion) but does not poll, so it costs
+        no CPU.
+        """
+        return self._running and self._role != "standby"
 
     @property
     def current_poll_interval(self) -> float:

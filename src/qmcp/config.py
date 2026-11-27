@@ -40,6 +40,12 @@ class Settings(BaseSettings):
         batch_size: Number of vectors to batch when indexing
         debounce_seconds: Seconds to wait before processing file changes
         watch_paths: Comma-separated list of paths to watch for changes
+        watch_autostart: Start the watcher on server startup (None = auto:
+            on for HTTP transports, off for stdio)
+        idle_timeout_seconds: Shut down an idle stdio server after this many
+            seconds without MCP traffic (0 disables)
+        replacement_grace_seconds: Idle period before a stdio server replaced
+            by a newer sibling from the same client exits
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_format: Log output format (json, text)
     """
@@ -123,6 +129,37 @@ class Settings(BaseSettings):
     ] = Field(
         default=["/data/repo"],
         description="List of paths to watch for changes",
+    )
+    watch_autostart: bool | None = Field(
+        default=None,
+        description=(
+            "Start the watcher on server startup. None (default) = auto: "
+            "enabled for HTTP transports (a shared daemon owns indexing), "
+            "disabled for stdio (every client connection spawns its own "
+            "process, and agents enable watching explicitly via "
+            "qdrant_watch_ensure)"
+        ),
+    )
+
+    # Lifecycle Configuration
+    idle_timeout_seconds: float = Field(
+        default=1800.0,
+        ge=0.0,
+        description=(
+            "Shut down an idle stdio server after this many seconds without "
+            "inbound MCP traffic; the client respawns it on the next tool "
+            "call. Guards against abandoned connections whose parent client "
+            "is still alive (no EOF, no parent death). 0 disables"
+        ),
+    )
+    replacement_grace_seconds: float = Field(
+        default=300.0,
+        ge=0.0,
+        description=(
+            "Idle period that must pass before a stdio server replaced by a "
+            "newer instance from the same client exits. Keeps clients that "
+            "multiplex several concurrent connections safe"
+        ),
     )
 
     # Logging Configuration

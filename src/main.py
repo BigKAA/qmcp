@@ -44,6 +44,14 @@ def main():
     else:
         mcp.run(transport=transport)
 
+    # run() returning means the client disconnected and the lifespan already
+    # cleaned up. Lingering non-daemon threads (thread pool workers, native
+    # runtimes) must not keep a dead connection's process alive: exit hard
+    # instead of falling through to interpreter shutdown.
+    logger.info("MCP server stopped; exiting")
+    sys.stderr.flush()
+    os._exit(0)
+
 
 if __name__ == "__main__":
     main()

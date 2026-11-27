@@ -14,6 +14,9 @@
 
 """Tests for MCP server."""
 
+import asyncio
+import time
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -110,22 +113,77 @@ class TestMcpServer:
         assert result["skipped_paths"] == []
 
     @pytest.mark.asyncio
-    async def test_app_lifespan_starts_and_stops_watcher(self):
-        """Test watcher lifecycle is managed during MCP startup and shutdown."""
-        with patch(
-            "qmcp.server._ensure_watcher_started", new=AsyncMock(return_value={"status": "started"})
-        ) as mock_ensure:
-            with patch("qmcp.server._stop_watcher", new=AsyncMock()) as mock_stop:
-                guard_task = Mock()
-                with patch("qmcp.server.start_orphan_guard", return_value=guard_task) as mock_guard:
-                    async with app_lifespan(Mock()):
-                        pass
+    async def test_app_lifespan_http_autostarts_watcher(self):
+        """HTTP daemons own indexing machine-wide, so the watcher starts with them."""
+        with patch.object(server_module.settings, "transport", "streamable-http"):
+            with patch.object(server_module.settings, "watch_paths", []):
+                with patch(
+                    "qmcp.server._ensure_watcher_started",
+                    new=AsyncMock(return_value={"status": "started"}),
+                ) as mock_ensure:
+                    with self._patched_guards() as patched:
+                        async with app_lifespan(Mock()):
+                            pass
 
         mock_ensure.assert_awaited_once()
-        mock_stop.assert_awaited_once()
-        # The orphan guard starts with the lifespan and is cancelled on exit
-        mock_guard.assert_called_once_with(shutdown=mock_stop)
-        guard_task.cancel.assert_called_once()
+        for mock_guard, task in patched["guards"]:
+            mock_guard.assert_called_once()
+            task.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_app_lifespan_stdio_skips_watcher_autostart(self):
+        """stdio servers must not autostart the watcher (one poller per client)."""
+        with patch.object(server_module.settings, "transport", "stdio"):
+            with patch.object(server_module.settings, "watch_paths", []):
+                with patch(
+                    "qmcp.server._ensure_watcher_started",
+                    new=AsyncMock(return_value={"status": "started"}),
+                ) as mock_ensure:
+                    with self._patched_guards() as patched:
+                        async with app_lifespan(Mock()):
+                            pass
+
+        mock_ensure.assert_not_awaited()
+        # Shutdown cleanup still runs
+        patched["stop"].assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_app_lifespan_watch_autostart_override(self):
+        """WATCH_AUTOSTART=true forces the watcher on even for stdio."""
+        with patch.object(server_module.settings, "transport", "stdio"):
+            with patch.object(server_module.settings, "watch_autostart", True):
+                with patch.object(server_module.settings, "watch_paths", []):
+                    with patch(
+                        "qmcp.server._ensure_watcher_started",
+                        new=AsyncMock(return_value={"status": "started"}),
+                    ) as mock_ensure:
+                        with self._patched_guards():
+                            async with app_lifespan(Mock()):
+                                pass
+
+        mock_ensure.assert_awaited_once()
+
+    @staticmethod
+    @contextmanager
+    def _patched_guards():
+        """Patch the three self-termination guards and watcher stop.
+
+        Yields a dict with ``guards`` - (mock, task) pairs, one per guard -
+        and ``stop`` - the AsyncMock replacing ``_stop_watcher``.
+        """
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        guards = []
+        for name in ("start_orphan_guard", "start_idle_guard", "start_replacement_guard"):
+            task = Mock()
+            mock_guard = stack.enter_context(patch(f"qmcp.server.{name}", return_value=task))
+            guards.append((mock_guard, task))
+        stop = stack.enter_context(patch("qmcp.server._stop_watcher", new=AsyncMock()))
+        try:
+            yield {"guards": guards, "stop": stop}
+        finally:
+            stack.close()
 
     def test_server_identity_includes_version(self):
         """MCP initialize response must report the package version."""
@@ -251,3 +309,64 @@ class TestStaleHitFiltering:
         settings = Settings.model_validate({"watch_paths": '["/tmp/a", "/tmp/b"]'})
 
         assert settings.watch_paths == ["/tmp/a", "/tmp/b"]
+
+    @pytest.mark.asyncio
+    async def test_activity_middleware_touches_and_counts(self):
+        """Every inbound message refreshes the activity timestamp and is counted."""
+        call_next = AsyncMock(return_value={"ok": True})
+        before = server_module._idle_seconds()
+
+        await asyncio.sleep(0.01)
+        result = await server_module._ActivityMiddleware()(Mock(), call_next)
+
+        assert result == {"ok": True}
+        assert server_module._idle_seconds() < before
+        assert server_module._active_requests == 0
+
+    @pytest.mark.asyncio
+    async def test_activity_middleware_counts_in_flight_requests(self):
+        """A slow request is visible as activity while it runs."""
+        started = asyncio.Event()
+
+        async def slow_call_next(_ctx):
+            started.set()
+            # While the handler runs, the request must be counted as active
+            assert server_module._is_active() is True
+            return None
+
+        task = asyncio.create_task(server_module._ActivityMiddleware()(Mock(), slow_call_next))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await task
+        assert server_module._is_active() is False
+
+    def test_is_active_true_while_indexing(self):
+        """In-flight indexing work must hold the idle guard back."""
+        original = server_module._indexing_in_progress
+        server_module._indexing_in_progress = 1
+        try:
+            assert server_module._is_active() is True
+        finally:
+            server_module._indexing_in_progress = original
+
+    def test_idle_seconds_resets_on_touch(self):
+        """A fresh activity stamp yields a near-zero idle age."""
+        server_module._last_activity_monotonic = time.monotonic()
+        assert server_module._idle_seconds() < 1.0
+
+    @pytest.mark.asyncio
+    async def test_get_status_reports_watcher_role(self):
+        """Status exposes the leader-election role for diagnostics."""
+        with patch("qmcp.server.get_qdrant_client") as mock_get_client:
+            mock_client = Mock()
+            mock_client.is_connected = True
+            mock_client.get_collections.return_value = []
+            mock_get_client.return_value = mock_client
+
+            mock_watcher = Mock()
+            mock_watcher.is_running = True
+            mock_watcher.role = "standby"
+            with patch("qmcp.server._watcher", mock_watcher):
+                with patch("qmcp.server._watch_paths", []):
+                    result = await qdrant_get_status()
+
+        assert result["watcher_role"] == "standby"

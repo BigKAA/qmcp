@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-11-27
+
+### Added
+- Idle self-termination for stdio servers (`IDLE_TIMEOUT_SECONDS`, default 1800, `0` disables): an MCP middleware records every inbound message as client activity, and a background guard exits the process (after a best-effort watcher shutdown) when no traffic has arrived for the timeout and no request or indexing task is in flight. Closes the abandoned-connection hole the 2026-11-27 CPU overheat incident exposed: a *living* client that reconnects leaves the old copy running because the inherited pipe fd never delivers EOF. Clients respawn the server on the next tool call
+- Replacement self-termination for stdio servers (`REPLACEMENT_GRACE_SECONDS`, default 300): each instance registers `(pid, started)` in a per-parent-PID file under `INDEX_LOCK_DIR`; an instance that sees a newer live registration from the same client exits once it has been idle past the grace period, so reconnect leftovers (e.g. one kimi-code session holding 4 stale copies) retire themselves while genuinely multiplexed connections stay alive
+- Watcher leader election: `AsyncWatcher` takes a `lock_dir` and holds a `LeaderLock` (`flock`, released automatically on process death) keyed by the watch set, so exactly one qmcp process machine-wide polls the filesystem; others idle in standby and are promoted when the leader dies. `qdrant_get_status` reports the role via `watcher_role` (`leader`/`standby`/`solo`)
+- `WATCH_AUTOSTART` setting (default `auto`): the watcher autostarts only for HTTP transports - a shared daemon is the machine-wide indexer - while per-connection stdio servers enable watching explicitly via `qdrant_watch_ensure` (the documented agent workflow); `true`/`false` overrides the policy
+- Recommended multi-client deployment documented (README/README.ru): one shared `streamable-http` daemon under launchd/systemd, clients connect by URL - no per-connection processes to orphan at all
+- `.env.example` with all supported environment variables
+
+### Changed
+- stdio watcher startup no longer happens automatically (see `WATCH_AUTOSTART`); agents must call `qdrant_watch_ensure` for their workspace, which remains merge-safe
+- Entry points hard-exit (`os._exit(0)`) after `run()` returns, so lingering non-daemon threads cannot keep a dead stdio connection's process alive; the `qmcp-qdrant` console script now honors `HOST`/`PORT` for `streamable-http` like `main.py` always did
+
 ## [0.3.4] - 2026-11-25
 
 ### Added

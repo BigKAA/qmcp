@@ -16,7 +16,7 @@
 
 import pytest
 
-from qmcp.locking import _lock_file_path, try_singleflight
+from qmcp.locking import LeaderLock, _lock_file_path, try_singleflight
 
 fcntl = pytest.importorskip("fcntl")
 
@@ -69,3 +69,84 @@ class TestLockFilePath:
         name = _lock_file_path(tmp_path, "code:/Users/secret/project/x.py").name
         assert "secret" not in name
         assert "x.py" not in name
+
+
+class TestLeaderLock:
+    """Tests for the long-held leader lock."""
+
+    def test_acquire_without_contention(self, tmp_path):
+        """The first caller becomes the leader and holds the lock."""
+        lock = LeaderLock("watcher:/repo", tmp_path)
+
+        assert lock.acquire() is True
+        assert lock.is_held is True
+
+    def test_second_caller_stays_standby(self, tmp_path):
+        """While a leader holds the lock, another instance cannot acquire."""
+        leader = LeaderLock("watcher:/repo", tmp_path)
+        standby = LeaderLock("watcher:/repo", tmp_path)
+        leader.acquire()
+
+        assert standby.acquire() is False
+        assert standby.is_held is False
+
+    def test_release_allows_promotion(self, tmp_path):
+        """A released lock is immediately acquirable by a standby."""
+        leader = LeaderLock("watcher:/repo", tmp_path)
+        standby = LeaderLock("watcher:/repo", tmp_path)
+        leader.acquire()
+        leader.release()
+
+        assert leader.is_held is False
+        assert standby.acquire() is True
+
+    def test_reacquire_after_external_release(self, tmp_path):
+        """A dead leader's flock is dropped by the OS; standbys take over."""
+        # Simulate a foreign leader process by holding the flock manually
+        lock_dir = tmp_path
+        lock_dir.mkdir(exist_ok=True)
+        lock_file = _lock_file_path(lock_dir, "watcher:/repo")
+        with open(lock_file, "w") as foreign_handle:
+            fcntl.flock(foreign_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            standby = LeaderLock("watcher:/repo", lock_dir)
+            assert standby.acquire() is False
+
+            # The foreign process dies -> the OS releases its flock
+            fcntl.flock(foreign_handle, fcntl.LOCK_UN)
+
+        assert standby.acquire() is True
+
+    def test_release_is_idempotent(self, tmp_path):
+        """Releasing an unheld lock is a no-op."""
+        lock = LeaderLock("watcher:/repo", tmp_path)
+
+        lock.release()
+        lock.release()
+
+        assert lock.is_held is False
+
+    def test_reacquire_swaps_handles(self, tmp_path):
+        """Acquiring twice in a row keeps exactly one open handle."""
+        lock = LeaderLock("watcher:/repo", tmp_path)
+        lock.acquire()
+        first_handle = lock._handle
+
+        assert lock.acquire() is True
+        assert lock._handle is not first_handle
+        assert first_handle.closed is True
+
+    def test_different_keys_do_not_contend(self, tmp_path):
+        """Watch sets are independent - one leader per key."""
+        first = LeaderLock("watcher:/repo-a", tmp_path)
+        second = LeaderLock("watcher:/repo-b", tmp_path)
+        first.acquire()
+
+        assert second.acquire() is True
+
+    def test_creates_lock_dir(self, tmp_path):
+        """The lock directory is created on first acquire."""
+        lock_dir = tmp_path / "nested" / "locks"
+        lock = LeaderLock("watcher:/repo", lock_dir)
+
+        assert lock.acquire() is True
+        assert lock_dir.is_dir()
