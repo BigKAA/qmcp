@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server for OpenCode
 
-[![Version](https://img.shields.io/badge/version-0.3.5-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Version](https://img.shields.io/badge/version-0.3.6-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -101,7 +101,7 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 > machine-wide watcher leader (see [Process Lifecycle](#process-lifecycle-and-resource-hygiene)),
 > and caps ONNX threads (`EMBEDDING_THREADS`, default 4) so N processes cannot
 > saturate every core. Keep `WATCH_PATHS` scoped to trees you actively work in -
-> a monorepo-scale path makes every process walk it on each poll.
+> with the event-driven watcher (FSEvents/inotify) even a monorepo-scale path costs ~0 idle CPU, since nothing is re-walked periodically.
 
 > 💡 **WATCH_PATHS examples**:
 > - Single path: `WATCH_PATHS=/home/user/project`
@@ -190,7 +190,7 @@ status = qdrant_get_status()
 qdrant_watch_ensure(paths=["/absolute/path/to/current/workspace"])
 ```
 
-`qdrant_watch_ensure` merges the current workspace with already watched paths and `WATCH_PATHS`, making it safe for a single global MCP shared by multiple projects. When several qmcp processes watch the same paths, a cross-process leader lock ensures exactly one of them polls the filesystem; the rest idle in standby (`watcher_role` in `qdrant_get_status` shows `leader`/`standby`) and are promoted automatically when the leader dies.
+`qdrant_watch_ensure` merges the current workspace with already watched paths and `WATCH_PATHS`, making it safe for a single global MCP shared by multiple projects. When several qmcp processes watch the same paths, a cross-process leader lock ensures exactly one of them runs the platform observer; the rest idle in standby with no observer at all (`watcher_role` in `qdrant_get_status` shows `leader`/`standby`) and are promoted automatically when the leader dies.
 
 ## Process Lifecycle and Resource Hygiene
 
@@ -220,7 +220,7 @@ Details:
 - After `run()` returns (client disconnected), the entry points hard-exit the
   process so no lingering thread can keep a dead connection alive.
 - The watcher is single-instance machine-wide (leader lock in
-  `INDEX_LOCK_DIR`), so even leftover copies cannot multiply the polling cost.
+  `INDEX_LOCK_DIR`), so even leftover copies cannot multiply the watching cost.
 
 Diagnostics and manual cleanup of pre-0.3.5 leftovers:
 

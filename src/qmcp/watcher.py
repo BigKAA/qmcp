@@ -16,8 +16,8 @@
 
 import asyncio
 import os
-import time
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +32,8 @@ from .logging_config import get_logger
 
 # Directory names that are never worth watching for code changes. They are
 # matched by exact name and pruned during traversal, so their contents are
-# never stat'ed - this is what keeps scans cheap on huge trees.
+# never stat'ed - this is what keeps baseline scans cheap on huge trees.
+# The same names are substring-checked as a final guard on incoming events.
 IGNORED_DIR_NAMES = frozenset(
     {
         "__pycache__",
@@ -48,197 +49,47 @@ IGNORED_DIR_NAMES = frozenset(
     }
 )
 
-# File extensions the async watcher reacts to. Files with other extensions
-# are skipped during traversal, so editing them never triggers reindexing.
+# File extensions the watcher reacts to. The platform observer delivers
+# events for every file type, so this is the dispatch-time filter; during
+# baseline/reconcile traversal it additionally decides what gets stat'ed.
 WATCHED_FILE_EXTENSIONS = frozenset({".py", ".go", ".js", ".ts", ".java", ".cs", ".md"})
 
 
-class FileChangeHandler(FileSystemEventHandler):
-    """Handler for file system events."""
-
-    def __init__(
-        self,
-        callback: Callable[[str, str], None],
-        debounce_seconds: float = 2.0,
-    ):
-        """Initialize handler.
-
-        Args:
-            callback: Function to call on file changes (path, event_type)
-            debounce_seconds: Time to wait before processing
-        """
-        self.logger = get_logger(f"{__name__}.FileChangeHandler")
-        self.callback = callback
-        self.debounce_seconds = debounce_seconds
-        self.pending_events: dict[str, tuple[str, float]] = {}
-
-    def on_modified(self, event: FileSystemEvent):
-        """Handle file modification."""
-        if not event.is_directory:
-            self.logger.debug(f"File modified: {event.src_path}")
-            self._schedule_event(event.src_path, "modified")
-
-    def on_created(self, event: FileSystemEvent):
-        """Handle file creation."""
-        if not event.is_directory:
-            self.logger.debug(f"File created: {event.src_path}")
-            self._schedule_event(event.src_path, "created")
-
-    def on_deleted(self, event: FileSystemEvent):
-        """Handle file deletion."""
-        if not event.is_directory:
-            self.logger.debug(f"File deleted: {event.src_path}")
-            self._schedule_event(event.src_path, "deleted")
-
-    def _schedule_event(self, path: str, event_type: str):
-        """Schedule an event with debouncing."""
-        self.pending_events[path] = (event_type, time.time())
-
-    def process_pending(self):
-        """Process pending events that have passed the debounce period."""
-        current_time = time.time()
-        processed = []
-
-        for path, (event_type, timestamp) in list(self.pending_events.items()):
-            if current_time - timestamp >= self.debounce_seconds:
-                self.callback(path, event_type)
-                processed.append(path)
-                del self.pending_events[path]
-
-        return processed
-
-
-class Watcher:
-    """File system watcher with debouncing."""
-
-    def __init__(
-        self,
-        paths: list[str],
-        callback: Callable[[str, str], None],
-        debounce_seconds: float = 5.0,
-    ):
-        """Initialize watcher.
-
-        Args:
-            paths: List of paths to watch
-            callback: Callback for file changes (path, event_type)
-            debounce_seconds: Debounce delay
-        """
-        self.logger = get_logger(f"{__name__}.Watcher")
-        self.paths = [Path(p) for p in paths]
-        self.callback = callback
-        self.debounce_seconds = debounce_seconds
-
-        self._handler = FileChangeHandler(
-            callback=self._handle_event,
-            debounce_seconds=debounce_seconds,
-        )
-        self._observer = Observer()
-        self._running = False
-
-    def _handle_event(self, path: str, event_type: str):
-        """Internal event handler."""
-        # Skip hidden files and common non-code files
-        if self._should_ignore(path):
-            return
-
-        self.callback(path, event_type)
-
-    def _should_ignore(self, path: str) -> bool:
-        """Check if path should be ignored."""
-        # Ignore patterns
-        ignore_patterns = [
-            "__pycache__",
-            ".git",
-            ".pytest_cache",
-            "node_modules",
-            ".venv",
-            "venv",
-            ".mypy_cache",
-            ".ruff_cache",
-            ".idea",
-            ".vscode",
-        ]
-
-        path_obj = Path(path)
-        name = path_obj.name
-
-        # Ignore hidden files
-        if name.startswith("."):
-            return True
-
-        # Ignore patterns in path
-        for pattern in ignore_patterns:
-            if pattern in path:
-                return True
-
-        # Only process supported extensions
-        supported = [".py", ".go", ".js", ".ts", ".java", ".cs", ".md"]
-        if path_obj.suffix not in supported:
-            return True
-
-        return False
-
-    def start(self):
-        """Start watching paths."""
-        if self._running:
-            return
-
-        for path in self.paths:
-            if path.exists():
-                self._observer.schedule(self._handler, str(path), recursive=True)
-
-        self._observer.start()
-        self._running = True
-        self.logger.info(f"Started watching {len(self.paths)} paths")
-
-    def stop(self):
-        """Stop watching."""
-        if not self._running:
-            return
-
-        self._observer.stop()
-        self._observer.join()
-        self._running = False
-        self.logger.info("Stopped watching")
-
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-    def process_pending(self):
-        """Process any pending file events."""
-        return self._handler.process_pending()
-
-
 class AsyncWatcher:
-    """Async polling watcher with debouncing and adaptive polling.
+    """Event-driven watcher over watchdog's Observer (FSEvents/inotify/polling
+    emitter depending on platform), with debouncing and leader election.
 
-    Design notes (GitHub issue #1 - blocking scans on large WATCH_PATHS):
-    - The baseline scan and periodic re-scans run in a worker thread
-      (``asyncio.to_thread``) so the event loop stays responsive even on
-      trees with hundreds of thousands of files.
-    - Ignored directories are pruned *during* traversal (``os.walk``
-      ``dirnames`` filtering) instead of being fully scanned with
-      ``rglob`` and filtered afterwards.
-    - The poll interval adapts to the measured scan duration: slow scans
-      grow the interval (up to ``max_poll_interval``), fast scans shrink
-      it back towards ``poll_interval``.
+    Design notes:
 
-    Leader election (CPU overheat incident, 2026-11-27): when ``lock_dir``
-    is set, exactly one qmcp process machine-wide polls this watch set.
-    Every watcher instance runs, but non-leaders idle in standby - they
-    neither walk the tree nor burn CPU - and one of them is promoted
-    automatically when the current leader dies (the OS drops its flock).
+    - Changes arrive as push events from the OS - no periodic filesystem
+      scanning, so idle CPU cost is ~0 regardless of tree size (the 2026-11
+      CPU overheat incident: the previous poller walked and stat'ed every
+      watched file every 1-10 s per process).
+    - Events are debounced latest-event-wins per path on the event loop:
+      each inbound event (re)arms a ``call_later`` timer, so an editor's
+      rapid saves collapse into one callback, and an atomic save
+      (unlink + rename) resolves to indexing, never deletion. Dispatch is
+      additionally filtered by extension / hidden name / ignored dirs.
+    - Leader election (CPU overheat incident, 2026-11-27): when ``lock_dir``
+      is set, exactly one qmcp process machine-wide runs an Observer for
+      this watch set. Every watcher instance runs, but non-leaders idle in
+      standby - no observer, no callbacks, no CPU - and one of them is
+      promoted automatically when the current leader dies (the OS drops
+      its flock).
+    - Standby gap coverage: a standby takes one baseline snapshot at start
+      (background thread) and, on promotion, reconciles it against the
+      filesystem once - files changed while nobody watched get their
+      events late but never lost. The map is freed right after, so the
+      steady state keeps no per-file state at all. A watcher that leads
+      from the start skips the snapshot entirely: the Observer sees
+      everything from activation onward.
     """
 
     def __init__(
         self,
         paths: list[str],
         callback: Callable[[str, str], Any],
-        poll_interval: float = 1.0,
         debounce_seconds: float = 5.0,
-        max_poll_interval: float | None = None,
         lock_dir: Path | None = None,
         standby_interval: float = 5.0,
     ):
@@ -246,15 +97,11 @@ class AsyncWatcher:
 
         Args:
             paths: List of paths to watch
-            callback: Async callback for file changes
-            poll_interval: Base (minimum) delay in seconds between filesystem
-                scans. The effective interval may grow adaptively up to
-                ``max_poll_interval`` when scans are slow.
-            debounce_seconds: Debounce delay
-            max_poll_interval: Upper bound for the adaptive poll interval.
-                Defaults to ``max(poll_interval * 10, 5.0)``.
+            callback: Async callback for file changes (path, event_type)
+            debounce_seconds: Delay between the last event for a path and
+                its callback dispatch (latest event wins)
             lock_dir: Directory for the cross-process leader lock. When set,
-                polling is single-instance machine-wide (see class docs).
+                watching is single-instance machine-wide (see class docs).
                 ``None`` disables leader election (tests, embeds).
             standby_interval: Delay between leader-lock attempts while in
                 standby.
@@ -262,15 +109,7 @@ class AsyncWatcher:
         self.logger = get_logger(f"{__name__}.AsyncWatcher")
         self.paths = [Path(p) for p in paths]
         self.callback = callback
-        self.poll_interval = poll_interval
         self.debounce_seconds = debounce_seconds
-
-        self._min_interval = poll_interval
-        self._max_interval = (
-            max_poll_interval if max_poll_interval is not None else max(poll_interval * 10, 5.0)
-        )
-        self._interval = poll_interval
-
         self._lock_dir = lock_dir
         self._standby_interval = standby_interval
         self._leader_lock: LeaderLock | None = (
@@ -280,8 +119,28 @@ class AsyncWatcher:
 
         self._running = False
         self._task: asyncio.Task | None = None
+        self._baseline_task: asyncio.Task | None = None
+        self._observer: Observer | None = None
+        self._stop_event = asyncio.Event()
+
+        # Loop-thread-only state: pending debounced events and their timers.
+        # The Observer's dispatch thread reaches _schedule_event only via
+        # call_soon_threadsafe, so no locking is needed.
+        self._pending: dict[str, str] = {}
+        self._timers: dict[str, asyncio.TimerHandle] = {}
+
+        # Fire-and-forget dispatch tasks; a set keeps strong references until
+        # done (asyncio only keeps weak references to running tasks, so an
+        # unreferenced callback task can be garbage-collected mid-flight and
+        # the event silently lost - this actually happened with mocks).
+        self._dispatch_tasks: set[asyncio.Task] = set()
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+        # Baseline mtime snapshot; populated only when leader election is
+        # enabled (a standby may later need to reconcile the standby gap)
+        # and freed after the promotion reconcile.
         self._last_mtimes: dict[str, float] = {}
-        self._pending: dict[str, tuple[str, float]] = {}
 
     def _leader_key(self) -> str:
         """Build the cross-process leader key for this watch set.
@@ -295,60 +154,249 @@ class AsyncWatcher:
     async def start(self):
         """Start watching.
 
-        Returns immediately: the baseline snapshot is built inside the
-        background task (in a worker thread) and change events only fire
-        after it completes. This keeps MCP server startup fast even when
-        watching very large directory trees.
+        Returns immediately: contention, the Observer and the baseline
+        snapshot all run inside background tasks, so MCP server startup
+        stays fast even on very large directory trees.
         """
         if self._running:
             return
 
+        self._loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
         self._running = True
+
+        # A standby needs a start-time snapshot to reconcile the gap when
+        # it is eventually promoted; a from-the-start leader does not (the
+        # Observer sees everything from activation onward).
+        if self._leader_lock is not None:
+            self._baseline_task = asyncio.create_task(asyncio.to_thread(self._scan_all_paths))
+
         self._task = asyncio.create_task(self._run())
         self.logger.info(f"Started async watching {len(self.paths)} paths (role={self._role})")
 
     async def stop(self):
-        """Stop watching."""
+        """Stop watching and release all OS and lock resources."""
+        if not self._running:
+            return
+
         self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        self._stop_event.set()
+
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        if self._baseline_task is not None:
+            self._baseline_task.cancel()
+            self._baseline_task = None
+
+        for timer in self._timers.values():
+            timer.cancel()
+        self._timers.clear()
+        self._pending.clear()
+
+        # Let in-flight dispatch callbacks finish before tearing down
+        if self._dispatch_tasks:
+            await asyncio.gather(*list(self._dispatch_tasks), return_exceptions=True)
+
+        if self._observer is not None:
+            await asyncio.to_thread(self._stop_observer)
+            self._observer = None
+
         if self._leader_lock is not None:
             self._leader_lock.release()
         self.logger.info("Stopped async watching")
 
     async def _run(self):
-        """Build the baseline snapshot off the event loop, then poll.
+        """Contend for leadership, then watch via the platform Observer.
 
-        With leader election enabled, first contend for the leader lock:
-        only the winner scans/polls; standbys wait for promotion (which
-        happens by themselves when the leader process dies).
+        Standbys retry the (non-blocking) leader lock every
+        ``standby_interval`` seconds; promotion happens by itself when the
+        current leader process dies and the OS drops its flock.
         """
         if self._leader_lock is None:
-            await asyncio.to_thread(self._scan_all_paths)
-            await self._poll_loop()
+            self._role = "solo"
+            await self._activate()
             return
 
         while self._running:
-            if not self._leader_lock.acquire():
-                self._role = "standby"
-                await asyncio.sleep(self._standby_interval)
+            if self._leader_lock.acquire():
+                self._role = "leader"
+                self.logger.info(
+                    "Won watcher leader lock - this process watches via the platform observer"
+                )
+                try:
+                    await self._activate()
+                finally:
+                    self._leader_lock.release()
+                return
+
+            self._role = "standby"
+            try:
+                # Sleep in small standby_interval chunks so stop() is quick
+                # even from standby.
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._standby_interval)
+                return  # stop requested while standby
+            except TimeoutError:
                 continue
 
-            self._role = "leader"
-            self.logger.info("Won watcher leader lock - this process polls the filesystem")
-            try:
-                # Baseline only on first leadership: afterwards _last_mtimes
-                # holds the previous era's snapshot, and the first poll diff
-                # replays everything that changed while we were in standby.
-                if not self._last_mtimes:
-                    await asyncio.to_thread(self._scan_all_paths)
-                await self._poll_loop()
-            finally:
-                self._leader_lock.release()
+    async def _activate(self):
+        """Bring up the Observer for this process's leadership tenure.
+
+        The Observer starts first so the event stream covers the whole
+        tenure; the baseline reconcile that may follow only reports
+        changes that happened *before* activation (the standby gap).
+        """
+        observer = Observer()
+        handler = _EventHandler(self)
+        for path in self.paths:
+            if path.exists():
+                observer.schedule(handler, str(path), recursive=True)
+        observer.start()
+        self._observer = observer
+
+        # A promoted standby waits for its start-time snapshot, then diffs
+        # it against the filesystem once to cover the standby gap. The map
+        # is freed afterwards: from here on the Observer owns change
+        # tracking and the steady state keeps no per-file state.
+        if self._baseline_task is not None:
+            with suppress(asyncio.CancelledError):
+                await self._baseline_task
+            self._baseline_task = None
+            if self._last_mtimes:
+                await asyncio.to_thread(self._reconcile)
+
+        await self._stop_event.wait()
+
+    def _stop_observer(self) -> None:
+        """Stop the Observer and join its threads (runs in a worker thread)."""
+        observer, self._observer = self._observer, None
+        if observer is None:
+            return
+        try:
+            observer.stop()
+            observer.join()
+        except Exception:
+            self.logger.exception("Failed to stop filesystem observer cleanly")
+
+    def _reconcile(self) -> None:
+        """Report changes made since this process's baseline snapshot.
+
+        Runs synchronously in a worker thread - always invoke via
+        ``asyncio.to_thread``. Events are marshalled onto the event loop
+        and go through the same debounce as live Observer events.
+        """
+        current: dict[str, float] = {}
+        for path in self.paths:
+            for file_path in self._iter_watch_files(path):
+                self._stat_file(file_path, current)
+
+        events: list[tuple[str, str]] = []
+        for file_str, mtime in current.items():
+            last_mtime = self._last_mtimes.get(file_str)
+            if last_mtime is None:
+                events.append((file_str, "created"))
+            elif mtime > last_mtime:
+                events.append((file_str, "modified"))
+        for file_str in set(self._last_mtimes) - current.keys():
+            events.append((file_str, "deleted"))
+
+        self._last_mtimes.clear()
+        if events:
+            self.logger.info("Reconciled %d change(s) missed during standby", len(events))
+            self._post_batch(events)
+
+    # ------------------------------------------------------------------
+    # Event intake (Observer dispatch thread -> event loop)
+    # ------------------------------------------------------------------
+
+    def _post(self, path: str, event_type: str) -> None:
+        """Marshal a raw Observer event onto the event loop (thread-safe)."""
+        if self._loop is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._schedule_event, path, event_type)
+        except RuntimeError:
+            # Event loop already closed during shutdown - nothing to deliver.
+            pass
+
+    def _post_batch(self, events: list[tuple[str, str]]) -> None:
+        """Marshal a batch of reconcile events onto the event loop."""
+        if self._loop is None or not events:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._apply_batch, events)
+        except RuntimeError:
+            pass
+
+    def _apply_batch(self, events: list[tuple[str, str]]) -> None:
+        """Schedule a batch of events on the event loop thread."""
+        for path, event_type in events:
+            self._schedule_event(path, event_type)
+
+    def _schedule_event(self, path: str, event_type: str) -> None:
+        """Record an event and (re)arm its debounce timer.
+
+        Event-loop-thread only. The pending map keeps only the latest event
+        per path, so an editor's rapid saves collapse into one dispatch and
+        an atomic save (delete + recreate, or rename over the target) can
+        never resolve to dropping the file's index.
+        """
+        if not self._running:
+            return
+        self._pending[path] = event_type
+        old_timer = self._timers.pop(path, None)
+        if old_timer is not None:
+            old_timer.cancel()
+        self._timers[path] = self._loop.call_later(self.debounce_seconds, self._fire, path)
+
+    def _fire(self, path: str) -> None:
+        """Dispatch a debounced event if it survived the debounce window."""
+        self._timers.pop(path, None)
+        event_type = self._pending.pop(path, None)
+        if event_type is None or not self._running:
+            return
+        if self._should_ignore(path):
+            return
+        task = asyncio.create_task(self._run_callback(path, event_type))
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._dispatch_tasks.discard)
+
+    async def _run_callback(self, path: str, event_type: str):
+        """Run the callback."""
+        if asyncio.iscoroutinefunction(self.callback):
+            await self.callback(path, event_type)
+        else:
+            self.callback(path, event_type)
+
+    # ------------------------------------------------------------------
+    # Path filtering
+    # ------------------------------------------------------------------
+
+    def _should_ignore(self, path: str) -> bool:
+        """Check whether a path can never trigger an index change.
+
+        Final guard before callbacks: hidden files, ignored directories
+        (substring match, as before) and files with extensions outside
+        ``WATCHED_FILE_EXTENSIONS`` are all dropped - the platform observer
+        delivers events for every file type.
+        """
+        path_obj = Path(path)
+
+        if path_obj.name.startswith("."):
+            return True
+
+        for pattern in IGNORED_DIR_NAMES:
+            if pattern in path:
+                return True
+
+        return path_obj.suffix not in WATCHED_FILE_EXTENSIONS
+
+    # ------------------------------------------------------------------
+    # Baseline snapshot traversal (worker-thread only)
+    # ------------------------------------------------------------------
 
     def _scan_all_paths(self) -> None:
         """Snapshot mtimes for every watched path (runs in a worker thread)."""
@@ -366,21 +414,6 @@ class AsyncWatcher:
         """
         for file_path in self._iter_watch_files(path):
             self._stat_file(file_path, self._last_mtimes)
-
-    def _collect_snapshot(self) -> dict[str, float]:
-        """Build a fresh ``{path: mtime}`` snapshot of all watched files.
-
-        Runs synchronously in a worker thread; ignored directories are
-        pruned during traversal, so their contents are never stat'ed.
-
-        Returns:
-            Snapshot mapping absolute file paths to mtimes.
-        """
-        snapshot: dict[str, float] = {}
-        for path in self.paths:
-            for file_path in self._iter_watch_files(path):
-                self._stat_file(file_path, snapshot)
-        return snapshot
 
     @staticmethod
     def _stat_file(file_path: Path, snapshot: dict[str, float]) -> None:
@@ -437,98 +470,9 @@ class AsyncWatcher:
         """
         return not file_path.name.startswith(".") and file_path.suffix in WATCHED_FILE_EXTENSIONS
 
-    async def _poll_loop(self):
-        """Poll for file changes, adapting the interval to scan cost."""
-        while self._running:
-            started_at = time.monotonic()
-            try:
-                await self._check_changes()
-            except Exception as exc:
-                self.logger.exception("Error while checking for file changes: %s", exc)
-
-            scan_duration = time.monotonic() - started_at
-            self._adapt_interval(scan_duration)
-            await asyncio.sleep(self._interval)
-
-    def _adapt_interval(self, scan_duration: float) -> None:
-        """Adjust the poll interval based on the measured scan duration.
-
-        When a scan takes at least as long as the current interval, the
-        interval doubles (never dropping below the scan duration itself, up
-        to ``max_poll_interval``), so huge trees are not re-scanned every
-        second; after fast scans it steps back down towards ``poll_interval``.
-
-        Args:
-            scan_duration: How long the last scan took, in seconds.
-        """
-        if scan_duration >= self._interval:
-            self._interval = min(max(self._interval * 2, scan_duration), self._max_interval)
-        else:
-            self._interval = max(self._min_interval, self._interval - self._min_interval)
-
-    async def _check_changes(self):
-        """Diff a fresh filesystem snapshot against the last known state.
-
-        The snapshot is collected in a worker thread; only the diff and the
-        debounced callback dispatch run on the event loop.
-        """
-        current_files = await asyncio.to_thread(self._collect_snapshot)
-        current_time = time.time()
-
-        for file_str, mtime in current_files.items():
-            last_mtime = self._last_mtimes.get(file_str)
-            if last_mtime is None:
-                self._pending[file_str] = ("created", current_time)
-            elif mtime > last_mtime:
-                self._pending[file_str] = ("modified", current_time)
-            self._last_mtimes[file_str] = mtime
-
-        # Detect deletions: paths present in the previous snapshot but gone
-        # from the current one. Entries leave _last_mtimes immediately so the
-        # mapping does not grow forever on churny trees, and a later recreate
-        # is reported as "created". Because _pending keeps only the latest
-        # event per path, an atomic save (unlink + rename, as editors do)
-        # collapses into a single "created"/"modified" instead of dropping
-        # the file's index.
-        for file_str in set(self._last_mtimes) - current_files.keys():
-            self._pending[file_str] = ("deleted", current_time)
-            del self._last_mtimes[file_str]
-
-        # Process pending events
-        to_process = []
-        for file_str, (event_type, timestamp) in list(self._pending.items()):
-            if current_time - timestamp >= self.debounce_seconds:
-                to_process.append((file_str, event_type))
-                del self._pending[file_str]
-
-        # Process events
-        for file_str, event_type in to_process:
-            if not self._should_ignore(file_str):
-                await self._run_callback(file_str, event_type)
-
-    def _should_ignore(self, path: str) -> bool:
-        """Check if path should be ignored (final guard before callbacks)."""
-        ignore_patterns = [
-            "__pycache__",
-            ".git",
-            ".pytest_cache",
-            "node_modules",
-            ".venv",
-            "venv",
-        ]
-
-        for pattern in ignore_patterns:
-            if pattern in path:
-                return True
-
-        return False
-
-    async def _run_callback(self, path: str, event_type: str):
-        """Run the callback."""
-        if asyncio.iscoroutinefunction(self.callback):
-            await self.callback(path, event_type)
-        else:
-            self.callback(path, event_type)
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
 
     @property
     def is_running(self) -> bool:
@@ -539,7 +483,7 @@ class AsyncWatcher:
         """This watcher's role in leader election.
 
         Returns:
-            ``"leader"`` while this process holds the lock and polls,
+            ``"leader"`` while this process holds the lock and watches,
             ``"standby"`` while another process leads,
             ``"solo"`` when leader election is disabled.
         """
@@ -547,15 +491,49 @@ class AsyncWatcher:
 
     @property
     def is_polling(self) -> bool:
-        """Whether this instance actively scans the filesystem right now.
+        """Whether this instance actively watches the filesystem right now.
 
         Distinct from ``is_running``: a standby watcher runs (its task is
-        alive, it waits for promotion) but does not poll, so it costs
+        alive, it waits for promotion) but runs no Observer, so it costs
         no CPU.
         """
         return self._running and self._role != "standby"
 
-    @property
-    def current_poll_interval(self) -> float:
-        """Effective poll interval in seconds (adapts between min and max)."""
-        return self._interval
+
+class _EventHandler(FileSystemEventHandler):
+    """Translate watchdog events into debounced watcher events.
+
+    Runs on the Observer's dispatch thread; everything is marshalled onto
+    the watcher's event loop. Directory events are dropped: FSEvents and
+    inotify deliver per-file events for file content, so directory events
+    carry no indexable payload.
+    """
+
+    def __init__(self, watcher: AsyncWatcher):
+        self._watcher = watcher
+
+    def on_created(self, event: FileSystemEvent) -> None:
+        self._forward(event, "created")
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        self._forward(event, "modified")
+
+    def on_deleted(self, event: FileSystemEvent) -> None:
+        self._forward(event, "deleted")
+
+    def on_moved(self, event: FileSystemEvent) -> None:
+        """A rename is a deletion at the source plus a creation at the target.
+
+        Covers atomic editors' saves (write temp file, rename over the
+        target): the target gets reindexed and the temp path is dropped by
+        the extension/hidden filters.
+        """
+        if event.is_directory:
+            return
+        self._watcher._post(str(event.src_path), "deleted")
+        self._watcher._post(str(event.dest_path), "created")
+
+    def _forward(self, event: FileSystemEvent, event_type: str) -> None:
+        if event.is_directory:
+            return
+        self._watcher._post(str(event.src_path), event_type)

@@ -1,6 +1,6 @@
 # qmcp - QDrant MCP Server для OpenCode
 
-[![Версия](https://img.shields.io/badge/version-0.3.5-blue.svg)](https://github.com/BigKAA/qmcp)
+[![Версия](https://img.shields.io/badge/version-0.3.6-blue.svg)](https://github.com/BigKAA/qmcp)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org/)
 [![Лицензия](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
@@ -103,7 +103,7 @@ opencode mcp add qmcp-qdrant qmcp-qdrant
 > ограничивает потоки ONNX (`EMBEDDING_THREADS`, по умолчанию 4), чтобы N
 > процессов не заняли все ядра. Держите `WATCH_PATHS` ограниченным деревьями,
 > с которыми реально работаете - путь размером с монорепозиторий заставит
-> каждый процесс обходить его при каждом опросе.
+> с событийным watcher'ом (FSEvents/inotify) даже путь размером с монорепозиторий стоит ~0 CPU в простое - периодических обходов больше нет.
 
 > 💡 **Примеры WATCH_PATHS**:
 > - Один путь: `WATCH_PATHS=/home/user/project`
@@ -223,7 +223,7 @@ stdio MCP-сервер порождается на каждое соединен
 - После возврата `run()` (клиент отключился) точки входа жёстко завершают
   процесс - ни один зависший поток не удержит мёртвое соединение.
 - Watcher существует в единственном экземпляре на машину (leader lock в
-  `INDEX_LOCK_DIR`), поэтому даже забытые копии не умножают стоимость опроса.
+  `INDEX_LOCK_DIR`), поэтому даже забытые копии не умножают стоимость отслеживания.
 
 Диагностика и ручная приборка копий, оставшихся с версий до 0.3.5:
 

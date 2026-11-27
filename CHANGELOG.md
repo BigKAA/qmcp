@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-11-27
+
+### Added
+- Event-driven watcher: `AsyncWatcher` now runs on watchdog's `Observer` (FSEvents on macOS, inotify on Linux) instead of periodic full-tree polling. Idle CPU drops from 3-9.5% per process to ~0 regardless of tree size - the last standing cost from the 2026-11 CPU overheat incident. Debounce is latest-event-wins per path on `call_later` timers (an editor's rapid saves collapse into one dispatch; rename-over-target atomic saves resolve to reindexing, never deletion); dispatch is filtered by extension/hidden name/ignored dirs at delivery. Leader election is unchanged (one Observer machine-wide per watch set); standbys run no observer at all
+- Standby-gap reconciliation: an election standby snapshots mtimes once at start and, when promoted after the leader died, diffs the snapshot once against the filesystem so changes made while nobody watched are still indexed; the map is freed afterwards, so the steady state keeps no per-file state at all (the polling watcher's mtime map dominated RSS on huge trees)
+- Fire-and-forget callback dispatch tasks are now kept in a strong-reference set until done - unreferenced tasks can be garbage-collected mid-flight by asyncio, silently losing events
+
+### Changed
+- `AsyncWatcher` no longer takes `poll_interval`/`max_poll_interval` and no longer exposes `current_poll_interval`/`process_pending` - there is no polling loop to tune; the legacy unused `Watcher`/`FileChangeHandler` classes are removed
+
 ## [0.3.5] - 2026-11-27
 
 ### Added

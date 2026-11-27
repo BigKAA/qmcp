@@ -15,7 +15,6 @@
 """Tests for watcher module."""
 
 import asyncio
-import os
 import tempfile
 import time
 from pathlib import Path
@@ -23,204 +22,50 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from qmcp.watcher import AsyncWatcher, FileChangeHandler, Watcher
+from qmcp.watcher import AsyncWatcher
+
+# The platform observer (FSEvents on macOS) coalesces events with a latency
+# of a few hundred ms; allow well above that before giving up on a callback.
+EVENT_TIMEOUT = 5.0
 
 
-class TestFileChangeHandler:
-    """Tests for FileChangeHandler class."""
-
-    @pytest.fixture
-    def mock_callback(self):
-        """Create a mock callback function."""
-        return Mock()
-
-    @pytest.fixture
-    def handler(self, mock_callback):
-        """Create FileChangeHandler instance."""
-        return FileChangeHandler(
-            callback=mock_callback,
-            debounce_seconds=0.1,  # Short for testing
-        )
-
-    def test_handler_initialization(self, handler, mock_callback):
-        """Test handler initializes with correct values."""
-        assert handler.callback == mock_callback
-        assert handler.debounce_seconds == 0.1
-        assert handler.pending_events == {}
-
-    def test_on_modified_schedules_event(self, handler):
-        """Test on_modified schedules event with debouncing."""
-        event = Mock()
-        event.is_directory = False
-        event.src_path = "/path/to/file.py"
-
-        handler.on_modified(event)
-
-        assert "/path/to/file.py" in handler.pending_events
-        assert handler.pending_events["/path/to/file.py"][0] == "modified"
-
-    def test_on_created_schedules_event(self, handler):
-        """Test on_created schedules event."""
-        event = Mock()
-        event.is_directory = False
-        event.src_path = "/path/to/new.py"
-
-        handler.on_created(event)
-
-        assert "/path/to/new.py" in handler.pending_events
-        assert handler.pending_events["/path/to/new.py"][0] == "created"
-
-    def test_on_deleted_schedules_event(self, handler):
-        """Test on_deleted schedules event."""
-        event = Mock()
-        event.is_directory = False
-        event.src_path = "/path/to/deleted.py"
-
-        handler.on_deleted(event)
-
-        assert "/path/to/deleted.py" in handler.pending_events
-        assert handler.pending_events["/path/to/deleted.py"][0] == "deleted"
-
-    def test_on_directory_ignored(self, handler):
-        """Test that directory events are ignored."""
-        event = Mock()
-        event.is_directory = True
-        event.src_path = "/path/to/dir"
-
-        handler.on_modified(event)
-
-        assert "/path/to/dir" not in handler.pending_events
-
-    def test_process_pending_calls_callback(self, handler, mock_callback):
-        """Test that process_pending calls callback after debounce."""
-        # Add event with old timestamp
-        old_time = time.time() - 1.0  # 1 second ago
-        handler.pending_events["/path/to/file.py"] = ("modified", old_time)
-
-        # Process pending
-        processed = handler.process_pending()
-
-        assert "/path/to/file.py" in processed
-        mock_callback.assert_called_once_with("/path/to/file.py", "modified")
-
-    def test_process_pending_respects_debounce(self, handler, mock_callback):
-        """Test that recent events are not processed yet."""
-        # Add event with recent timestamp
-        recent_time = time.time()
-        handler.pending_events["/path/to/file.py"] = ("modified", recent_time)
-
-        # Process pending
-        processed = handler.process_pending()
-
-        assert len(processed) == 0
-        mock_callback.assert_not_called()
-
-    def test_multiple_events_processed(self, handler, mock_callback):
-        """Test multiple pending events are processed."""
-        old_time = time.time() - 1.0
-
-        handler.pending_events["/path/to/file1.py"] = ("modified", old_time)
-        handler.pending_events["/path/to/file2.py"] = ("created", old_time - 0.5)
-        handler.pending_events["/path/to/file3.py"] = ("deleted", old_time)
-
-        processed = handler.process_pending()
-
-        assert len(processed) == 3
-        assert mock_callback.call_count == 3
+async def _wait_until(predicate, timeout: float = EVENT_TIMEOUT) -> bool:
+    """Poll ``predicate`` until it is true or ``timeout`` elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.05)
+    return False
 
 
-class TestWatcher:
-    """Tests for Watcher class."""
+async def _wait_observing(watcher: AsyncWatcher, timeout: float = EVENT_TIMEOUT) -> bool:
+    """Wait until the watcher's platform observer is up and streaming.
 
-    @pytest.fixture
-    def temp_dir(self):
-        """Create temporary directory for testing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yield Path(tmpdir)
+    ``start()`` returns before the Observer (started inside a background
+    task) is live, so tests must not touch the filesystem before this -
+    changes made earlier would fall before the event stream and be missed.
+    """
+    ok = await _wait_until(lambda: watcher._observer is not None, timeout)
+    if ok:
+        # Give the FSEvents stream a beat to warm up
+        await asyncio.sleep(0.3)
+    return ok
 
-    @pytest.fixture
-    def mock_callback(self):
-        """Create mock callback."""
-        return Mock()
 
-    def test_watcher_initialization(self, mock_callback):
-        """Test watcher initializes correctly."""
-        paths = ["/path/to/watch1", "/path/to/watch2"]
-        watcher = Watcher(
-            paths=paths,
-            callback=mock_callback,
-            debounce_seconds=5.0,
-        )
+def _events_of(callback) -> set[tuple[str, str]]:
+    """Collect (path, event_type) pairs an async mock callback has seen.
 
-        assert watcher.paths == [Path("/path/to/watch1"), Path("/path/to/watch2")]
-        assert watcher.callback == mock_callback
-        assert watcher.debounce_seconds == 5.0
-        assert not watcher.is_running
+    A set: duplicates collapse. When a test needs to count repeats (the
+    same event can legitimately fire twice), read ``callback.await_args_list``
+    directly.
+    """
+    return {(call.args[0], call.args[1]) for call in callback.await_args_list}
 
-    def test_should_ignore_hidden_files(self, temp_dir, mock_callback):
-        """Test that hidden files are ignored."""
-        watcher = Watcher(
-            paths=[str(temp_dir)],
-            callback=mock_callback,
-        )
 
-        assert watcher._should_ignore("/path/to/.hidden.py") is True
-        assert watcher._should_ignore("/path/to/normal.py") is False
-
-    def test_should_ignore_patterns(self, temp_dir, mock_callback):
-        """Test that common patterns are ignored."""
-        watcher = Watcher(
-            paths=[str(temp_dir)],
-            callback=mock_callback,
-        )
-
-        assert watcher._should_ignore("/path/__pycache__/file.py") is True
-        assert watcher._should_ignore("/path/.git/file.py") is True
-        assert watcher._should_ignore("/path/node_modules/file.js") is True
-        assert watcher._should_ignore("/path/venv/lib/file.py") is True
-
-    def test_should_ignore_unsupported_extensions(self, temp_dir, mock_callback):
-        """Test that unsupported file extensions are ignored."""
-        watcher = Watcher(
-            paths=[str(temp_dir)],
-            callback=mock_callback,
-        )
-
-        assert watcher._should_ignore("/path/file.txt") is True
-        assert watcher._should_ignore("/path/file.bin") is True
-        assert watcher._should_ignore("/path/file.exe") is True
-
-    def test_should_accept_supported_extensions(self, temp_dir, mock_callback):
-        """Test that supported extensions are accepted."""
-        watcher = Watcher(
-            paths=[str(temp_dir)],
-            callback=mock_callback,
-        )
-
-        assert watcher._should_ignore("/path/file.py") is False
-        assert watcher._should_ignore("/path/file.go") is False
-        assert watcher._should_ignore("/path/file.js") is False
-        assert watcher._should_ignore("/path/file.ts") is False
-        assert watcher._should_ignore("/path/file.java") is False
-        assert watcher._should_ignore("/path/file.cs") is False
-        assert watcher._should_ignore("/path/file.md") is False
-
-    def test_start_and_stop(self, temp_dir, mock_callback):
-        """Test watcher can start and stop."""
-        # Create a real file to watch
-        test_file = temp_dir / "test.py"
-        test_file.write_text("# test")
-
-        watcher = Watcher(
-            paths=[str(temp_dir)],
-            callback=mock_callback,
-        )
-
-        watcher.start()
-        assert watcher.is_running
-
-        watcher.stop()
-        assert not watcher.is_running
+def _count_events(callback, path_suffix: str) -> int:
+    """Count callback invocations for paths ending with ``path_suffix``."""
+    return sum(1 for call in callback.await_args_list if call.args[0].endswith(path_suffix))
 
 
 class TestAsyncWatcher:
@@ -240,32 +85,59 @@ class TestAsyncWatcher:
     @pytest.mark.asyncio
     async def test_async_watcher_initialization(self, mock_callback):
         """Test async watcher initializes correctly."""
-        paths = ["/path/to/watch"]
         watcher = AsyncWatcher(
-            paths=paths,
+            paths=["/path/to/watch"],
             callback=mock_callback,
-            poll_interval=0.5,
             debounce_seconds=5.0,
         )
 
         assert watcher.paths == [Path("/path/to/watch")]
         assert watcher.callback == mock_callback
-        assert watcher.poll_interval == 0.5
         assert watcher.debounce_seconds == 5.0
         assert not watcher.is_running
+        assert watcher._pending == {}
+        assert watcher._timers == {}
 
     @pytest.mark.asyncio
-    async def test_async_watcher_should_ignore_patterns(self, mock_callback):
+    async def test_should_ignore_hidden_files(self, mock_callback):
+        """Hidden files never reach the callback."""
+        watcher = AsyncWatcher(paths=["/path"], callback=mock_callback)
+
+        assert watcher._should_ignore("/path/to/.hidden.py") is True
+        assert watcher._should_ignore("/path/to/normal.py") is False
+
+    @pytest.mark.asyncio
+    async def test_should_ignore_patterns(self, mock_callback):
         """Test async watcher ignores certain patterns."""
-        watcher = AsyncWatcher(
-            paths=["/path"],
-            callback=mock_callback,
-        )
+        watcher = AsyncWatcher(paths=["/path"], callback=mock_callback)
 
         assert watcher._should_ignore("/path/__pycache__/file.py") is True
         assert watcher._should_ignore("/path/.git/file.py") is True
         assert watcher._should_ignore("/path/node_modules/file.js") is True
         assert watcher._should_ignore("/path/.venv/file.py") is True
+
+    @pytest.mark.asyncio
+    async def test_should_ignore_unsupported_extensions(self, mock_callback):
+        """The observer delivers every file type; the dispatch filter drops
+        everything outside WATCHED_FILE_EXTENSIONS."""
+        watcher = AsyncWatcher(paths=["/path"], callback=mock_callback)
+
+        assert watcher._should_ignore("/path/file.txt") is True
+        assert watcher._should_ignore("/path/file.bin") is True
+        assert watcher._should_ignore("/path/file.tmp") is True
+
+    @pytest.mark.asyncio
+    async def test_should_accept_supported_extensions(self, mock_callback):
+        """All indexed languages pass the filter."""
+        watcher = AsyncWatcher(paths=["/path"], callback=mock_callback)
+
+        assert watcher._should_ignore("/path/file.py") is False
+        assert watcher._should_ignore("/path/file.go") is False
+        assert watcher._should_ignore("/path/file.js") is False
+        assert watcher._should_ignore("/path/file.ts") is False
+        assert watcher._should_ignore("/path/file.java") is False
+        assert watcher._should_ignore("/path/file.cs") is False
+        assert watcher._should_ignore("/path/file.md") is False
 
     @pytest.mark.asyncio
     async def test_async_watcher_start_stop(self, temp_dir, mock_callback):
@@ -276,7 +148,6 @@ class TestAsyncWatcher:
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=mock_callback,
-            poll_interval=0.1,
         )
 
         await watcher.start()
@@ -287,29 +158,30 @@ class TestAsyncWatcher:
 
     @pytest.mark.asyncio
     async def test_async_watcher_detects_new_file(self, temp_dir, mock_callback):
-        """Test async watcher detects new files."""
+        """A file created after start reaches the callback, debounced."""
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=mock_callback,
-            poll_interval=0.1,
-            debounce_seconds=0.2,
+            debounce_seconds=0.1,
         )
 
-        # Start watcher
         await watcher.start()
+        await _wait_observing(watcher)
 
-        # Create new file
         test_file = temp_dir / "new_file.py"
         test_file.write_text("# new file")
 
-        # Wait for polling
-        await asyncio.sleep(0.3)
-
-        # Stop watcher
+        found = await _wait_until(
+            lambda: any(path.endswith("new_file.py") for path, _ in _events_of(mock_callback))
+        )
         await watcher.stop()
 
-        # Verify callback was called (may need adjustment based on timing)
-        # In real tests, use mock clock or longer delays
+        assert found, f"no event for new file, got {_events_of(mock_callback)}"
+        # Whatever the create/modify coalescing decided, it is not a deletion
+        assert not any(
+            path.endswith("new_file.py") and event_type == "deleted"
+            for path, event_type in _events_of(mock_callback)
+        )
 
     @pytest.mark.asyncio
     async def test_run_callback_with_sync_function(self, temp_dir):
@@ -318,7 +190,6 @@ class TestAsyncWatcher:
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=sync_callback,
-            poll_interval=0.1,
         )
 
         # Should not raise when running sync callback
@@ -327,15 +198,19 @@ class TestAsyncWatcher:
         sync_callback.assert_called_once_with("/path/file.py", "modified")
 
     @pytest.mark.asyncio
-    async def test_start_returns_before_slow_scan(self, temp_dir, mock_callback):
+    async def test_start_returns_before_slow_scan(self, temp_dir, mock_callback, tmp_path):
         """start() must return immediately even while the baseline scan runs.
 
         Regression test for issue #1: scanning WATCH_PATHS used to block the
         event loop inside start(), so the MCP client timed out on initialize.
+        The baseline only exists for leader-election watchers (standbys need
+        it to reconcile the standby gap), so this watcher uses a lock dir.
         """
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=mock_callback,
+            lock_dir=tmp_path / "locks",
+            standby_interval=0.01,
         )
 
         def slow_scan():
@@ -353,51 +228,50 @@ class TestAsyncWatcher:
 
     @pytest.mark.asyncio
     async def test_detects_created_and_modified_files(self, temp_dir, mock_callback):
-        """End-to-end: baseline first, then debounced created/modified events."""
+        """End-to-end: a new file and a rewrite both reach the callback.
+
+        FSEvents may deliver a "history" event for files changed just before
+        the stream started (watchdog ships suppress_history=False), so the
+        waits target the specific file and a *new* existing.py event.
+        """
         existing = temp_dir / "existing.py"
         existing.write_text("# v1")
 
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=mock_callback,
-            poll_interval=0.05,
             debounce_seconds=0.1,
         )
         await watcher.start()
+        await _wait_observing(watcher)
 
-        # Wait for the baseline scan so the next file is detected as "created"
-        for _ in range(100):
-            if str(existing) in watcher._last_mtimes:
-                break
-            await asyncio.sleep(0.02)
-        else:
-            await watcher.stop()
-            pytest.fail("Baseline scan did not complete")
-
-        # New file must be reported as created
         new_file = temp_dir / "created.py"
         new_file.write_text("# new")
-        await asyncio.sleep(0.6)
+        saw_new = await _wait_until(
+            lambda: any(p.endswith("created.py") for p, _ in _events_of(mock_callback))
+        )
 
-        # Bump mtime explicitly: filesystem mtime granularity can be >= 1s,
-        # which would make a quick rewrite invisible to the watcher.
-        future = time.time() + 5
-        os.utime(existing, (future, future))
-        await asyncio.sleep(0.6)
-
+        existing_events_before = _count_events(mock_callback, "existing.py")
+        existing.write_text("# v2")
+        saw_modified = await _wait_until(
+            lambda: _count_events(mock_callback, "existing.py") > existing_events_before
+        )
         await watcher.stop()
 
-        events = {(call.args[0], call.args[1]) for call in mock_callback.call_args_list}
-        created_paths = [path for path, event_type in events if event_type == "created"]
+        events = _events_of(mock_callback)
+        new_types = {t for p, t in events if p.endswith("created.py")}
+        existing_types = {t for p, t in events if p.endswith("existing.py")}
 
-        assert (str(new_file), "created") in events
-        assert (str(existing), "modified") in events
-        # Files already present at start are baseline, not "created"
-        assert str(existing) not in created_paths
+        assert saw_new, f"no event for created.py, got {events}"
+        # A fresh create arrives as created (plus possibly a modify)
+        assert new_types <= {"created", "modified"}
+        assert saw_modified, f"no rewrite event for existing.py, got {events}"
+        # An in-place rewrite is a modify, never a create
+        assert existing_types == {"modified"}
 
     @pytest.mark.asyncio
     async def test_detects_deleted_files(self, temp_dir, mock_callback):
-        """Files vanishing between polls produce a debounced 'deleted' event.
+        """A deleted file produces a 'deleted' event.
 
         Without it, points of deleted files stay in Qdrant forever and search
         keeps returning pointers to files that no longer exist.
@@ -408,36 +282,28 @@ class TestAsyncWatcher:
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=mock_callback,
-            poll_interval=0.05,
             debounce_seconds=0.1,
         )
         await watcher.start()
-
-        # Wait for the baseline scan so the file is a known state
-        for _ in range(100):
-            if str(doomed) in watcher._last_mtimes:
-                break
-            await asyncio.sleep(0.02)
-        else:
-            await watcher.stop()
-            pytest.fail("Baseline scan did not complete")
+        await _wait_observing(watcher)
 
         doomed.unlink()
-        await asyncio.sleep(0.6)
+        # FSEvents reports paths through the resolved /private prefix on
+        # macOS, so compare against the resolved path, not the raw one.
+        found = await _wait_until(
+            lambda: (str(doomed.resolve()), "deleted") in _events_of(mock_callback)
+        )
         await watcher.stop()
 
-        events = {(call.args[0], call.args[1]) for call in mock_callback.call_args_list}
-        assert (str(doomed), "deleted") in events
-        # The stale entry must leave the mtime map, not linger forever
-        assert str(doomed) not in watcher._last_mtimes
+        assert found, f"no deleted event, got {_events_of(mock_callback)}"
 
     @pytest.mark.asyncio
     async def test_atomic_save_collapses_delete_and_recreate(self, temp_dir, mock_callback):
-        """Unlink + rename saves (editors do this) end in reindex, not delete.
+        """Rename-over-target saves (editors do this) end in reindex, not delete.
 
-        The pending-event dict keeps only the latest event per path, so a
-        deletion immediately followed by a recreate within the debounce
-        window resolves to "created" and never drops the file's index.
+        The pending-event map keeps only the latest event per path and the
+        move event posts delete-at-source + create-at-target, so the target
+        never dispatches "deleted" and its index is never dropped.
         """
         doc = temp_dir / "doc.py"
         doc.write_text("# v1")
@@ -445,30 +311,26 @@ class TestAsyncWatcher:
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=mock_callback,
-            poll_interval=0.05,
-            debounce_seconds=0.3,
+            debounce_seconds=0.5,
         )
         await watcher.start()
-
-        for _ in range(100):
-            if str(doc) in watcher._last_mtimes:
-                break
-            await asyncio.sleep(0.02)
-        else:
-            await watcher.stop()
-            pytest.fail("Baseline scan did not complete")
+        await _wait_observing(watcher)
 
         # Atomic save: write a replacement next to it, unlink the original,
-        # rename over the target - all within one debounce window.
+        # rename over the target.
         replacement = temp_dir / "doc.py.tmp"
         replacement.write_text("# v2")
         doc.unlink()
         replacement.rename(doc)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.5)
         await watcher.stop()
 
-        events = {(call.args[0], call.args[1]) for call in mock_callback.call_args_list}
+        events = _events_of(mock_callback)
         assert (str(doc), "deleted") not in events
+        assert any(
+            path.endswith("doc.py") and event_type in ("created", "modified")
+            for path, event_type in events
+        )
 
 
 class TestAsyncWatcherTraversal:
@@ -525,51 +387,34 @@ class TestAsyncWatcherTraversal:
         watcher._scan_path(txt_file)
         assert str(txt_file) not in watcher._last_mtimes
 
-    def test_adapt_interval_grows_and_caps(self):
-        """Slow scans grow the interval (at least to the scan duration), capped."""
-        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=1.0)
+    @pytest.mark.asyncio
+    async def test_leader_from_start_takes_no_baseline(self, tmp_path):
+        """A watcher that leads immediately skips the snapshot entirely.
 
-        watcher._adapt_interval(scan_duration=1.0)
-        assert watcher.current_poll_interval == 2.0
+        The Observer sees every change from activation onward, so the
+        steady state must keep no per-file state (the polling watcher's
+        mtime map used to dominate RSS on huge trees). Only leader-election
+        watchers spawn the baseline task - a standby may need it to
+        reconcile the standby gap on promotion.
+        """
+        watcher = AsyncWatcher(paths=[str(tmp_path)], callback=AsyncMock())
+        await watcher.start()
+        try:
+            assert watcher._baseline_task is None
+            assert watcher._last_mtimes == {}
+        finally:
+            await watcher.stop()
 
-        # Never below the scan duration itself
-        watcher._adapt_interval(scan_duration=5.0)
-        assert watcher.current_poll_interval == 5.0
-
-        # Capped at max_poll_interval
-        watcher._adapt_interval(scan_duration=100.0)
-        assert watcher.current_poll_interval == watcher._max_interval
-
-        # Further slow scans must not exceed the cap
-        watcher._adapt_interval(scan_duration=100.0)
-        assert watcher.current_poll_interval == watcher._max_interval
-
-    def test_adapt_interval_shrinks_back(self):
-        """Fast scans step the interval back down towards poll_interval."""
-        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=1.0)
-        watcher._interval = 8.0
-
-        watcher._adapt_interval(scan_duration=0.01)
-        assert watcher.current_poll_interval == 7.0
-
-        watcher._adapt_interval(scan_duration=0.01)
-        assert watcher.current_poll_interval == 6.0
-
-    def test_max_poll_interval_default(self):
-        """Default cap is max(poll_interval * 10, 5.0), overridable."""
-        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=1.0)
-        assert watcher._max_interval == 10.0
-
-        watcher = AsyncWatcher(paths=["/path"], callback=AsyncMock(), poll_interval=0.1)
-        assert watcher._max_interval == 5.0
-
-        watcher = AsyncWatcher(
-            paths=["/path"],
+        watcher_with_locks = AsyncWatcher(
+            paths=[str(tmp_path)],
             callback=AsyncMock(),
-            poll_interval=0.1,
-            max_poll_interval=2.0,
+            lock_dir=tmp_path / "locks",
         )
-        assert watcher._max_interval == 2.0
+        await watcher_with_locks.start()
+        try:
+            assert watcher_with_locks._baseline_task is not None
+        finally:
+            await watcher_with_locks.stop()
 
 
 class TestAsyncWatcherLeaderElection:
@@ -596,35 +441,32 @@ class TestAsyncWatcherLeaderElection:
 
     @pytest.mark.asyncio
     async def test_first_instance_becomes_leader(self, temp_dir, lock_dir):
-        """The uncontended watcher acquires leadership and polls."""
+        """The uncontended watcher acquires leadership and watches."""
         leader_callback = AsyncMock()
         (temp_dir / "solo.py").write_text("x = 1\n")
         watcher = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=leader_callback,
-            poll_interval=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
         )
         await watcher.start()
 
-        await asyncio.sleep(0.3)
-
-        assert watcher.role == "leader"
+        promoted = await _wait_until(lambda: watcher.role == "leader")
         assert watcher.is_polling is True
 
         await watcher.stop()
+        assert promoted
 
     @pytest.mark.asyncio
     async def test_second_instance_stays_standby(self, temp_dir, lock_dir):
-        """A second watcher over the same paths never scans or fires."""
+        """A second watcher over the same paths runs no observer and no callbacks."""
         leader_callback = AsyncMock()
         standby_callback = AsyncMock()
         (temp_dir / "solo.py").write_text("x = 1\n")
         leader = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=leader_callback,
-            poll_interval=0.05,
             debounce_seconds=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
@@ -632,27 +474,26 @@ class TestAsyncWatcherLeaderElection:
         standby = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=standby_callback,
-            poll_interval=0.05,
             debounce_seconds=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
         )
         await leader.start()
-        await asyncio.sleep(0.1)  # let the leader win the lock first
+        await _wait_until(lambda: leader.role == "leader")
+        await _wait_observing(leader)
         await standby.start()
 
         # Change a file while both watch: only the leader reacts
-        await asyncio.sleep(0.1)
         (temp_dir / "new.py").write_text("y = 2\n")
-        await asyncio.sleep(0.3)
+        fired = await _wait_until(lambda: leader_callback.await_count > 0)
 
         assert leader.role == "leader"
         assert standby.role == "standby"
         assert standby.is_running is True
         assert standby.is_polling is False
-        # The standby itself never fired a callback; the leader did
+        assert fired
+        # The standby runs no Observer - it never sees the change
         assert standby_callback.await_count == 0
-        assert leader_callback.await_count > 0
 
         await leader.stop()
         await standby.stop()
@@ -666,38 +507,36 @@ class TestAsyncWatcherLeaderElection:
         leader = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=leader_callback,
-            poll_interval=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
         )
         standby = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=standby_callback,
-            poll_interval=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
         )
         await leader.start()
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: leader.role == "leader")
         await standby.start()
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: standby.role == "standby")
         assert standby.role == "standby"
 
         await leader.stop()
-        await asyncio.sleep(0.3)
+        promoted = await _wait_until(lambda: standby.role == "leader")
 
-        assert standby.role == "leader"
+        assert promoted
         assert standby.is_polling is True
 
         await standby.stop()
 
     @pytest.mark.asyncio
-    async def test_promotion_does_not_replay_existing_tree(self, temp_dir, lock_dir):
-        """A newly promoted standby baselines quietly - no event storm.
+    async def test_reconcile_is_silent_when_standby_saw_no_changes(self, temp_dir, lock_dir):
+        """Promotion with an unchanged tree baselines quietly - no event storm.
 
-        A standby that leads for the first time has no snapshot memory; on
-        promotion it must treat the current tree as the baseline instead of
-        flooding the indexer with "created" events for every existing file.
+        The promoted standby diffs its start-time snapshot against the
+        filesystem; identical state must produce zero callbacks (the old
+        poller's replay-storm regression guard).
         """
         leader_callback = AsyncMock()
         standby_callback = AsyncMock()
@@ -706,7 +545,6 @@ class TestAsyncWatcherLeaderElection:
         leader = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=leader_callback,
-            poll_interval=0.05,
             debounce_seconds=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
@@ -714,21 +552,73 @@ class TestAsyncWatcherLeaderElection:
         standby = AsyncWatcher(
             paths=[str(temp_dir)],
             callback=standby_callback,
-            poll_interval=0.05,
             debounce_seconds=0.05,
             lock_dir=lock_dir,
             standby_interval=0.01,
         )
         await leader.start()
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: leader.role == "leader")
         await standby.start()
-        await asyncio.sleep(0.05)
+        # Wait for the standby's baseline snapshot to complete
+        await _wait_until(lambda: len(standby._last_mtimes) == 5)
 
         await leader.stop()
-        await asyncio.sleep(0.4)  # promotion + a few poll cycles
+        promoted = await _wait_until(lambda: standby.role == "leader")
+        await asyncio.sleep(1.0)  # reconcile + debounce window
 
+        assert promoted
         assert standby.role == "leader"
-        # Nothing changed since the standby's baseline: total silence
+        # Nothing changed during standby: total silence
         assert standby_callback.await_count == 0
+
+        await standby.stop()
+
+    @pytest.mark.asyncio
+    async def test_changes_during_standby_reconciled_on_promotion(self, temp_dir, lock_dir):
+        """Files changed while another process led are indexed on promotion.
+
+        The Observer only sees changes from activation onward, so a newly
+        promoted standby replays its snapshot diff: the standby-gap window
+        (leader died, nothing watched) must not leave files stale.
+        """
+        leader_callback = AsyncMock()
+        standby_callback = AsyncMock()
+        (temp_dir / "solo.py").write_text("x = 1\n")
+        leader = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=leader_callback,
+            debounce_seconds=0.05,
+            lock_dir=lock_dir,
+            standby_interval=0.01,
+        )
+        # A long standby interval keeps the standby in standby long enough
+        # to write into the gap between leader stop and promotion.
+        standby = AsyncWatcher(
+            paths=[str(temp_dir)],
+            callback=standby_callback,
+            debounce_seconds=0.05,
+            lock_dir=lock_dir,
+            standby_interval=1.0,
+        )
+        await leader.start()
+        await _wait_until(lambda: leader.role == "leader")
+        await standby.start()
+        await _wait_until(lambda: len(standby._last_mtimes) == 1)
+
+        await leader.stop()
+        gap_file = temp_dir / "gap.py"
+        gap_file.write_text("# written while nobody watched")
+
+        promoted = await _wait_until(lambda: standby.role == "leader", timeout=3.0)
+        reconciled = await _wait_until(
+            lambda: (str(gap_file), "created") in _events_of(standby_callback)
+        )
+
+        assert promoted
+        assert reconciled, f"standby gap not reconciled, got {_events_of(standby_callback)}"
+        # The (stopped) leader must not have seen the gap file
+        assert not any(path.endswith("gap.py") for path, _ in _events_of(leader_callback))
+        # The baseline map is freed after reconcile - no per-file steady state
+        assert standby._last_mtimes == {}
 
         await standby.stop()
